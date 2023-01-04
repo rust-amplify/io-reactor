@@ -79,7 +79,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
 
 pub struct Reactor<S: Handler> {
     thread: JoinHandle<()>,
-    controller: Controller<S::Command>,
+    controller: Controller<S>,
 }
 
 impl<S: Handler> Reactor<S> {
@@ -88,8 +88,8 @@ impl<S: Handler> Reactor<S> {
         S: 'static,
         P: 'static,
     {
-        let (shutdown_send, shutdown_recv) = chan::bounded(1);
-        let (control_send, control_recv) = chan::unbounded();
+        let (ctl_send, ctl_recv) = chan::unbounded();
+        let (cmd_send, cmd_recv) = chan::unbounded();
 
         let (waker_writer, waker_reader) = UnixStream::pair()?;
         waker_reader.set_nonblocking(true)?;
@@ -98,11 +98,11 @@ impl<S: Handler> Reactor<S> {
         let thread = std::thread::spawn(move || {
             poller.register(waker_reader.as_raw_fd());
 
-            let runtime = Runtime {
+            let runtime1 = Runtime {
                 service,
                 poller,
-                control_recv,
-                shutdown_recv,
+                cmd_recv,
+                ctl_recv,
                 listeners: empty!(),
                 transports: empty!(),
                 listener_map: empty!(),
@@ -110,19 +110,20 @@ impl<S: Handler> Reactor<S> {
                 waker: waker_reader,
                 timeouts: TimeoutManager::new(Duration::from_secs(1)),
             };
+            let runtime = runtime1;
 
             runtime.run();
         });
 
         let controller = Controller {
-            control_send,
-            shutdown_send,
+            cmd_send,
+            ctl_send,
             waker: Arc::new(Mutex::new(waker_writer)),
         };
         Ok(Self { thread, controller })
     }
 
-    pub fn controller(&self) -> Controller<S::Command> {
+    pub fn controller(&self) -> Controller<S> {
         self.controller.clone()
     }
 
@@ -131,35 +132,57 @@ impl<S: Handler> Reactor<S> {
     }
 }
 
-pub struct Controller<C> {
-    control_send: chan::Sender<C>,
-    shutdown_send: chan::Sender<()>,
+enum Ctl<S: Handler> {
+    RegisterListener(S::Listener),
+    RegisterTransport(S::Transport),
+    Shutdown,
+}
+
+pub struct Controller<S: Handler> {
+    cmd_send: chan::Sender<S::Command>,
+    ctl_send: chan::Sender<Ctl<S>>,
     waker: Arc<Mutex<UnixStream>>,
 }
 
-impl<C> Clone for Controller<C> {
+impl<S: Handler> Clone for Controller<S> {
     fn clone(&self) -> Self {
         Controller {
-            control_send: self.control_send.clone(),
-            shutdown_send: self.shutdown_send.clone(),
+            cmd_send: self.cmd_send.clone(),
+            ctl_send: self.ctl_send.clone(),
             waker: self.waker.clone(),
         }
     }
 }
 
-impl<C> Controller<C> {
-    pub fn send(&self, command: C) -> Result<(), io::Error> {
-        self.control_send
-            .send(command)
+impl<S: Handler> Controller<S> {
+    pub fn register_listener(&self, listener: S::Listener) -> Result<(), io::Error> {
+        self.ctl_send
+            .send(Ctl::RegisterListener(listener))
+            .map_err(|_| io::ErrorKind::BrokenPipe)?;
+        self.wake()?;
+        Ok(())
+    }
+
+    pub fn register_transport(&self, transport: S::Transport) -> Result<(), io::Error> {
+        self.ctl_send
+            .send(Ctl::RegisterTransport(transport))
             .map_err(|_| io::ErrorKind::BrokenPipe)?;
         self.wake()?;
         Ok(())
     }
 
     pub fn shutdown(self) -> Result<(), Self> {
-        let res = self.shutdown_send.send(());
-        self.wake().expect("waker socket failure");
-        res.map_err(|_| self)
+        let res1 = self.ctl_send.send(Ctl::Shutdown);
+        let res2 = self.wake();
+        res1.or(res2).map_err(|_| self)
+    }
+
+    pub fn send(&self, command: S::Command) -> Result<(), io::Error> {
+        self.cmd_send
+            .send(command)
+            .map_err(|_| io::ErrorKind::BrokenPipe)?;
+        self.wake()?;
+        Ok(())
     }
 
     fn wake(&self) -> io::Result<()> {
@@ -204,8 +227,8 @@ fn reset_fd(fd: &impl AsRawFd) -> io::Result<()> {
 pub struct Runtime<H: Handler, P: Poll> {
     service: H,
     poller: P,
-    control_recv: chan::Receiver<H::Command>,
-    shutdown_recv: chan::Receiver<()>,
+    cmd_recv: chan::Receiver<H::Command>,
+    ctl_recv: chan::Receiver<Ctl<H>>,
     listener_map: HashMap<RawFd, <H::Listener as Resource>::Id>,
     transport_map: HashMap<RawFd, <H::Transport as Resource>::Id>,
     listeners: HashMap<<H::Listener as Resource>::Id, H::Listener>,
@@ -239,17 +262,23 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 self.handle_events(instant);
             }
             loop {
-                match self.control_recv.try_recv() {
+                match self.cmd_recv.try_recv() {
                     Err(chan::TryRecvError::Empty) => break,
                     Err(chan::TryRecvError::Disconnected) => panic!("control channel is broken"),
                     Ok(cmd) => self.service.handle_command(cmd),
                 }
             }
             loop {
-                match self.shutdown_recv.try_recv() {
+                match self.ctl_recv.try_recv() {
                     Err(chan::TryRecvError::Empty) => break,
                     Err(chan::TryRecvError::Disconnected) => panic!("shutdown channel is broken"),
-                    Ok(_) => return self.handle_shutdown(),
+                    Ok(Ctl::Shutdown) => return self.handle_shutdown(),
+                    Ok(Ctl::RegisterListener(listener)) => self
+                        .handle_action(Action::RegisterListener(listener), instant)
+                        .expect("register actions do not error"),
+                    Ok(Ctl::RegisterTransport(transport)) => self
+                        .handle_action(Action::RegisterTransport(transport), instant)
+                        .expect("register actions do not error"),
                 }
             }
         }

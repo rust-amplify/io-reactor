@@ -8,8 +8,8 @@ use crate::poller::IoEv;
 
 pub trait ResourceId: Copy + Eq + Ord + Hash + Debug + Display {}
 
-pub trait Resource: AsRawFd + Iterator<Item = Self::Event> {
-    type Id: ResourceId;
+pub trait Resource: AsRawFd + Send + Iterator<Item = Self::Event> {
+    type Id: ResourceId + Send;
     type Event;
     type Message;
 
