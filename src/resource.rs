@@ -8,20 +8,13 @@ use crate::poller::IoEv;
 
 pub trait ResourceId: Copy + Eq + Ord + Hash + Debug + Display {}
 
-pub trait Resource: AsRawFd + Send + Iterator<Item = Self::Event> {
+pub trait Resource: AsRawFd + io::Write + Send {
     type Id: ResourceId + Send;
     type Event;
-    type Message;
 
     fn id(&self) -> Self::Id;
 
-    /// Asks resource to handle I/O. Must return a number of events generated
-    /// from the resource I/O.
-    fn handle_io(&mut self, ev: IoEv) -> usize;
-
-    fn post(&mut self, msg: Self::Message) -> io::Result<()>;
-
-    fn flush(&mut self) -> io::Result<()>;
+    fn handle_io(&mut self, ev: IoEv) -> Option<Self::Event>;
 
     fn disconnect(self) -> io::Result<()>;
 }
