@@ -360,7 +360,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     // has failed for a given transport). We report error -- and lose all other
                     // messages we planned to send
                     transport
-                        .send(msg)
+                        .post(msg)
                         .map_err(|err| Error::PeerDisconnected(id, err))?;
                 }
             }
