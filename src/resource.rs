@@ -19,7 +19,9 @@ pub trait Resource: AsRawFd + Send + Iterator<Item = Self::Event> {
     /// from the resource I/O.
     fn handle_io(&mut self, ev: IoEv) -> usize;
 
-    fn send(&mut self, msg: Self::Message) -> io::Result<()>;
+    fn post(&mut self, msg: Self::Message) -> io::Result<()>;
+
+    fn flush(&mut self) -> io::Result<()>;
 
     fn disconnect(self) -> io::Result<()>;
 }
