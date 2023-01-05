@@ -37,7 +37,7 @@ pub enum Action<L: Resource, T: Resource> {
     RegisterTransport(T),
     UnregisterListener(L::Id),
     UnregisterTransport(T::Id),
-    Send(T::Id, Vec<T::Message>),
+    Send(T::Id, Vec<u8>),
     SetTimer(Duration),
 }
 
@@ -290,14 +290,12 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 reset_fd(&self.waker).expect("waker failure")
             } else if let Some(id) = self.listener_map.get(&fd) {
                 let res = self.listeners.get_mut(id).expect("resource disappeared");
-                res.handle_io(io);
-                for event in res {
+                if let Some(event) = res.handle_io(io) {
                     self.service.handle_listener_event(*id, event, time);
                 }
             } else if let Some(id) = self.transport_map.get(&fd) {
                 let res = self.transports.get_mut(id).expect("resource disappeared");
-                res.handle_io(io);
-                for event in res {
+                if let Some(event) = res.handle_io(io) {
                     self.service.handle_transport_event(*id, event, time);
                 }
             }
@@ -353,16 +351,14 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 self.poller.unregister(fd);
                 self.service.handover_transport(transport);
             }
-            Action::Send(id, msgs) => {
+            Action::Send(id, data) => {
                 let transport = self.transports.get_mut(&id).ok_or(Error::PeerUnknown(id))?;
-                for msg in msgs {
-                    // If we fail on sending any message this means disconnection (I/O write
-                    // has failed for a given transport). We report error -- and lose all other
-                    // messages we planned to send
-                    transport
-                        .post(msg)
-                        .map_err(|err| Error::PeerDisconnected(id, err))?;
-                }
+                // If we fail on sending any message this means disconnection (I/O write
+                // has failed for a given transport). We report error -- and lose all other
+                // messages we planned to send
+                transport
+                    .write(&data)
+                    .map_err(|err| Error::PeerDisconnected(id, err))?;
             }
             Action::SetTimer(duration) => {
                 self.timeouts.register((), time + duration);
