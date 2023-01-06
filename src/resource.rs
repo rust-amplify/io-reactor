@@ -5,6 +5,7 @@ use std::os::unix::prelude::RawFd;
 use std::{io, net};
 
 use crate::poller::IoEv;
+use crate::WriteNonblocking;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Io {
@@ -14,7 +15,7 @@ pub enum Io {
 
 pub trait ResourceId: Copy + Eq + Ord + Hash + Debug + Display {}
 
-pub trait Resource: AsRawFd + io::Write + Send {
+pub trait Resource: AsRawFd + WriteNonblocking + Send {
     type Id: ResourceId + Send;
     type Event;
 

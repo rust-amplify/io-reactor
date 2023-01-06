@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel as chan;
 
 use crate::poller::Poll;
-use crate::{Resource, ResourceId, TimeoutManager};
+use crate::{IoStatus, Resource, ResourceId, TimeoutManager, WriteNonblocking};
 
 /// Maximum amount of time to wait for i/o.
 const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -368,10 +368,16 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 // If we fail on sending any message this means disconnection (I/O write
                 // has failed for a given transport). We report error -- and lose all other
                 // messages we planned to send
-                // TODO: Consider using `write_nonblocking`
-                transport
-                    .write_all(&data)
-                    .map_err(|err| Error::PeerDisconnected(id, err))?;
+                match transport.write_nonblocking(&data) {
+                    IoStatus::Success(_) => {}
+                    IoStatus::WouldBlock => {}
+                    IoStatus::Shutdown => {
+                        unreachable!("orderly remote shutdown is not possible during write")
+                    }
+                    IoStatus::Err(err) => {
+                        return Err(Error::PeerDisconnected(id, err))?;
+                    }
+                }
             }
             Action::SetTimer(duration) => {
                 self.timeouts.register((), time + duration);

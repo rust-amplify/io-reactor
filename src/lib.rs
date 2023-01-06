@@ -14,11 +14,13 @@
 #[macro_use]
 extern crate amplify;
 
+mod nonblock;
 pub mod poller;
 mod reactor;
 mod resource;
 mod timeouts;
 
+pub use nonblock::{IoStatus, ReadNonblocking, WriteNonblocking};
 pub use reactor::{Action, Controller, Error, Handler, Reactor};
 pub use resource::{Io, Resource, ResourceId};
 pub use timeouts::TimeoutManager;
