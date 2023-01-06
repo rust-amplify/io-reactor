@@ -4,6 +4,8 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::prelude::RawFd;
 use std::{io, net};
 
+use crate::poller::IoEv;
+
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Io {
     Read,
@@ -17,6 +19,7 @@ pub trait Resource: AsRawFd + io::Write + Send {
     type Event;
 
     fn id(&self) -> Self::Id;
+    fn interests(&self) -> IoEv;
 
     fn handle_io(&mut self, io: Io) -> Option<Self::Event>;
 

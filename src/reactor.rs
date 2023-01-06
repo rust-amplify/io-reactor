@@ -96,7 +96,7 @@ impl<S: Handler> Reactor<S> {
         waker_writer.set_nonblocking(true)?;
 
         let thread = std::thread::spawn(move || {
-            poller.register(waker_reader.as_raw_fd());
+            poller.register(&waker_reader);
 
             let runtime1 = Runtime {
                 service,
@@ -247,6 +247,13 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 .unwrap_or(WAIT_TIMEOUT)
                 .into();
 
+            for res in self.listeners.values() {
+                self.poller.set_iterest(res, res.interests());
+            }
+            for res in self.transports.values() {
+                self.poller.set_iterest(res, res.interests());
+            }
+
             // Blocking
             let count = match self.poller.poll(Some(timeout)) {
                 Ok(count) => count,
@@ -324,14 +331,14 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             Action::RegisterListener(listener) => {
                 let id = listener.id();
                 let fd = listener.as_raw_fd();
-                self.poller.register(fd);
+                self.poller.register(&listener);
                 self.listeners.insert(id, listener);
                 self.listener_map.insert(fd, id);
             }
             Action::RegisterTransport(transport) => {
                 let id = transport.id();
                 let fd = transport.as_raw_fd();
-                self.poller.register(fd);
+                self.poller.register(&transport);
                 self.transports.insert(id, transport);
                 self.transport_map.insert(fd, id);
             }
@@ -344,7 +351,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 self.listener_map
                     .remove(&fd)
                     .expect("listener index content doesn't match registered listeners");
-                self.poller.unregister(fd);
+                self.poller.unregister(&listener);
                 self.service.handover_listener(listener);
             }
             Action::UnregisterTransport(id) => {
@@ -353,7 +360,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 self.transport_map
                     .remove(&fd)
                     .expect("transport index content doesn't match registered transports");
-                self.poller.unregister(fd);
+                self.poller.unregister(&transport);
                 self.service.handover_transport(transport);
             }
             Action::Send(id, data) => {
