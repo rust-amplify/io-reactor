@@ -14,6 +14,29 @@ pub struct IoEv {
     pub is_writable: bool,
 }
 
+impl IoEv {
+    pub fn read_only() -> Self {
+        Self {
+            is_readable: true,
+            is_writable: false,
+        }
+    }
+
+    pub fn write_only() -> Self {
+        Self {
+            is_readable: false,
+            is_writable: true,
+        }
+    }
+
+    pub fn read_write() -> Self {
+        Self {
+            is_readable: true,
+            is_writable: true,
+        }
+    }
+}
+
 impl Iterator for IoEv {
     type Item = Io;
 
@@ -35,8 +58,9 @@ where
     Self: Send + Iterator<Item = (RawFd, IoEv)>,
     for<'a> &'a mut Self: Iterator<Item = (RawFd, IoEv)>,
 {
-    fn register(&mut self, fd: impl AsRawFd);
-    fn unregister(&mut self, fd: impl AsRawFd);
+    fn register(&mut self, fd: &impl AsRawFd);
+    fn unregister(&mut self, fd: &impl AsRawFd);
+    fn set_iterest(&mut self, fd: &impl AsRawFd, interest: IoEv) -> bool;
 
     fn poll(&mut self, timeout: Option<Duration>) -> io::Result<usize>;
 }

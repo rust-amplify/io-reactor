@@ -22,12 +22,16 @@ impl Poller {
 }
 
 impl Poll for Poller {
-    fn register(&mut self, fd: impl AsRawFd) {
-        self.poll.register(fd.as_raw_fd(), &fd, popol::event::ALL);
+    fn register(&mut self, fd: &impl AsRawFd) {
+        self.poll.register(fd.as_raw_fd(), fd, popol::event::ALL);
     }
 
-    fn unregister(&mut self, fd: impl AsRawFd) {
+    fn unregister(&mut self, fd: &impl AsRawFd) {
         self.poll.unregister(&fd.as_raw_fd());
+    }
+
+    fn set_iterest(&mut self, fd: &impl AsRawFd, interest: IoEv) -> bool {
+        self.poll.set(&fd.as_raw_fd(), interest.into())
     }
 
     fn poll(&mut self, timeout: Option<Duration>) -> io::Result<usize> {
@@ -57,5 +61,18 @@ impl Iterator for Poller {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.events.pop_front()
+    }
+}
+
+impl From<IoEv> for popol::Event {
+    fn from(ev: IoEv) -> Self {
+        let mut e = popol::event::NONE;
+        if ev.is_readable {
+            e |= popol::event::READ;
+        }
+        if ev.is_writable {
+            e |= popol::event::WRITE;
+        }
+        e
     }
 }
