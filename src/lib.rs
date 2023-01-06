@@ -20,5 +20,5 @@ mod resource;
 mod timeouts;
 
 pub use reactor::{Action, Controller, Error, Handler, Reactor};
-pub use resource::{Resource, ResourceId};
+pub use resource::{Io, Resource, ResourceId};
 pub use timeouts::TimeoutManager;

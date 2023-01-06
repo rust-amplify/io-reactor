@@ -291,13 +291,17 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 reset_fd(&self.waker).expect("waker failure")
             } else if let Some(id) = self.listener_map.get(&fd) {
                 let res = self.listeners.get_mut(id).expect("resource disappeared");
-                if let Some(event) = res.handle_io(io) {
-                    self.service.handle_listener_event(*id, event, time);
+                for io in io {
+                    if let Some(event) = res.handle_io(io) {
+                        self.service.handle_listener_event(*id, event, time);
+                    }
                 }
             } else if let Some(id) = self.transport_map.get(&fd) {
                 let res = self.transports.get_mut(id).expect("resource disappeared");
-                if let Some(event) = res.handle_io(io) {
-                    self.service.handle_transport_event(*id, event, time);
+                for io in io {
+                    if let Some(event) = res.handle_io(io) {
+                        self.service.handle_transport_event(*id, event, time);
+                    }
                 }
             }
         }

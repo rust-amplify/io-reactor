@@ -1,5 +1,6 @@
 pub mod popol;
 
+use crate::resource::Io;
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::time::Duration;
@@ -11,6 +12,22 @@ pub struct IoEv {
     pub is_readable: bool,
     /// Specifies whether I/O source is ready for write operations.
     pub is_writable: bool,
+}
+
+impl Iterator for IoEv {
+    type Item = Io;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.is_writable {
+            self.is_writable = false;
+            Some(Io::Write)
+        } else if self.is_readable {
+            self.is_readable = false;
+            Some(Io::Read)
+        } else {
+            None
+        }
+    }
 }
 
 pub trait Poll
