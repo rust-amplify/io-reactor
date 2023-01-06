@@ -368,8 +368,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 // If we fail on sending any message this means disconnection (I/O write
                 // has failed for a given transport). We report error -- and lose all other
                 // messages we planned to send
+                // TODO: Consider using `write_nonblocking`
                 transport
-                    .write(&data)
+                    .write_all(&data)
                     .map_err(|err| Error::PeerDisconnected(id, err))?;
             }
             Action::SetTimer(duration) => {
