@@ -139,6 +139,7 @@ enum Ctl<S: Handler> {
 }
 
 pub struct Controller<S: Handler> {
+    // TODO: Unify command anc control channels
     cmd_send: chan::Sender<S::Command>,
     ctl_send: chan::Sender<Ctl<S>>,
     waker: Arc<Mutex<UnixStream>>,
