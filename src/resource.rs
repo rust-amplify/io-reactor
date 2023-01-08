@@ -4,7 +4,7 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::prelude::RawFd;
 use std::{io, net};
 
-use crate::poller::IoEv;
+use crate::poller::IoType;
 use crate::WriteNonblocking;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -20,7 +20,7 @@ pub trait Resource: AsRawFd + WriteNonblocking + Send {
     type Event;
 
     fn id(&self) -> Self::Id;
-    fn interests(&self) -> IoEv;
+    fn interests(&self) -> IoType;
 
     fn handle_io(&mut self, io: Io) -> Option<Self::Event>;
 
