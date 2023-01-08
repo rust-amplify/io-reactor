@@ -1,9 +1,11 @@
 pub mod popol;
 
-use crate::resource::Io;
+use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::time::Duration;
+
+use crate::resource::Io;
 
 /// Information about I/O events which has happened for an actor
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
@@ -50,6 +52,18 @@ impl Iterator for IoEv {
         } else {
             None
         }
+    }
+}
+
+impl Display for IoEv {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        if self.is_readable {
+            f.write_str("r")?;
+        }
+        if self.is_writable {
+            f.write_str("w")?;
+        }
+        Ok(())
     }
 }
 
