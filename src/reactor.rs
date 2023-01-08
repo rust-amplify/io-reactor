@@ -378,7 +378,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 awoken = true;
             } else if let Some(id) = self.listener_map.get(&fd) {
                 #[cfg(feature = "log")]
-                log::debug!(target: "reactor", "Got `{io}` event from the listener {id} (fd={fd})");
+                log::trace!(target: "reactor", "Got `{io}` event from the listener {id} (fd={fd})");
 
                 let res = self.listeners.get_mut(id).expect("resource disappeared");
                 for io in io {
@@ -405,7 +405,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     fn handle_actions(&mut self, time: Instant) {
         while let Some(action) = self.service.next() {
             #[cfg(feature = "log")]
-            log::debug!(target: "reactor", "Handling action {action} from the service");
+            log::trace!(target: "reactor", "Handling action {action} from the service");
 
             // NB: Deadlock may happen here if the service will generate events over and over
             // in the handle_* calls we may never get out of this loop
