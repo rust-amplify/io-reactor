@@ -3,13 +3,13 @@ use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::time::Duration;
 
-use crate::poller::{IoEv, Poll};
+use crate::poller::{IoType, Poll};
 
 /// Manager for a set of resources which are polled for an event loop by the
 /// re-actor by using [`popol`] library.
 pub struct Poller {
     poll: popol::Poll<RawFd>,
-    events: VecDeque<(RawFd, IoEv)>,
+    events: VecDeque<(RawFd, IoType)>,
 }
 
 impl Poller {
@@ -22,10 +22,10 @@ impl Poller {
 }
 
 impl Poll for Poller {
-    fn register(&mut self, fd: &impl AsRawFd) {
+    fn register(&mut self, fd: &impl AsRawFd, interest: IoType) {
         #[cfg(feature = "log")]
         log::trace!(target: "popol", "Registering {}", fd.as_raw_fd());
-        self.poll.register(fd.as_raw_fd(), fd, popol::event::ALL);
+        self.poll.register(fd.as_raw_fd(), fd, interest.into());
     }
 
     fn unregister(&mut self, fd: &impl AsRawFd) {
@@ -34,9 +34,9 @@ impl Poll for Poller {
         self.poll.unregister(&fd.as_raw_fd());
     }
 
-    fn set_iterest(&mut self, fd: &impl AsRawFd, interest: IoEv) -> bool {
+    fn set_interest(&mut self, fd: &impl AsRawFd, interest: IoType) -> bool {
         #[cfg(feature = "log")]
-        log::trace!(target: "popol", "Setting interest `{}` on {}", interest, fd.as_raw_fd());
+        log::trace!(target: "popol", "Setting interest `{interest}` on {}", fd.as_raw_fd());
         self.poll.set(&fd.as_raw_fd(), interest.into())
     }
 
@@ -45,8 +45,8 @@ impl Poll for Poller {
 
         #[cfg(feature = "log")]
         log::trace!(target: "popol",
-            "Polling {} resources with timeout {:?} (pending event queue is {})",
-            self.poll.len(), timeout, len
+            "Polling {} resources with timeout {timeout:?} (pending event queue is {len})",
+            self.poll.len(),
         );
 
         // Blocking call
@@ -56,17 +56,16 @@ impl Poll for Poller {
             return Ok(0);
         }
 
-        let event_count = self.events.len() - len;
         #[cfg(feature = "log")]
-        log::trace!(target: "popol", "Poll resulted in {} events; adding them to the queue", event_count);
+        log::trace!(target: "popol", "Poll resulted in {} event(s)", self.poll.len());
 
         for (fd, ev) in self.poll.events() {
-            let ev = IoEv {
+            let ev = IoType {
                 is_readable: ev.is_readable(),
                 is_writable: ev.is_writable(),
             };
             #[cfg(feature = "log")]
-            log::trace!(target: "popol", "Got event `{}` for {}", ev, fd);
+            log::trace!(target: "popol", "Got event `{ev}` for {fd}");
             self.events.push_back((*fd, ev))
         }
 
@@ -75,13 +74,13 @@ impl Poll for Poller {
 }
 
 impl Iterator for Poller {
-    type Item = (RawFd, IoEv);
+    type Item = (RawFd, IoType);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.events.pop_front() {
             Some((fd, ev)) => {
                 #[cfg(feature = "log")]
-                log::trace!(target: "popol", "Popped event `{}` for {} from the queue", ev, fd);
+                log::trace!(target: "popol", "Popped event `{ev}` for {fd} from the queue");
                 Some((fd, ev))
             }
             None => {
@@ -93,8 +92,8 @@ impl Iterator for Poller {
     }
 }
 
-impl From<IoEv> for popol::Event {
-    fn from(ev: IoEv) -> Self {
+impl From<IoType> for popol::Event {
+    fn from(ev: IoType) -> Self {
         let mut e = popol::event::NONE;
         if ev.is_readable {
             e |= popol::event::READ;

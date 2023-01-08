@@ -9,14 +9,14 @@ use crate::resource::Io;
 
 /// Information about I/O events which has happened for an actor
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
-pub struct IoEv {
+pub struct IoType {
     /// Specifies whether I/O source has data to read.
     pub is_readable: bool,
     /// Specifies whether I/O source is ready for write operations.
     pub is_writable: bool,
 }
 
-impl IoEv {
+impl IoType {
     pub fn read_only() -> Self {
         Self {
             is_readable: true,
@@ -39,7 +39,7 @@ impl IoEv {
     }
 }
 
-impl Iterator for IoEv {
+impl Iterator for IoType {
     type Item = Io;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -55,7 +55,7 @@ impl Iterator for IoEv {
     }
 }
 
-impl Display for IoEv {
+impl Display for IoType {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if self.is_readable {
             f.write_str("r")?;
@@ -69,12 +69,12 @@ impl Display for IoEv {
 
 pub trait Poll
 where
-    Self: Send + Iterator<Item = (RawFd, IoEv)>,
-    for<'a> &'a mut Self: Iterator<Item = (RawFd, IoEv)>,
+    Self: Send + Iterator<Item = (RawFd, IoType)>,
+    for<'a> &'a mut Self: Iterator<Item = (RawFd, IoType)>,
 {
-    fn register(&mut self, fd: &impl AsRawFd);
+    fn register(&mut self, fd: &impl AsRawFd, interest: IoType);
     fn unregister(&mut self, fd: &impl AsRawFd);
-    fn set_iterest(&mut self, fd: &impl AsRawFd, interest: IoEv) -> bool;
+    fn set_interest(&mut self, fd: &impl AsRawFd, interest: IoType) -> bool;
 
     fn poll(&mut self, timeout: Option<Duration>) -> io::Result<usize>;
 }
