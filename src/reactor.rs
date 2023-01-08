@@ -309,52 +309,73 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             }
 
             // Blocking
-            let count = match self.poller.poll(Some(timeout)) {
+            #[cfg(feature = "log")]
+            log::trace!(target: "reactor", "Polling with timeout {timeout:?}");
+            match self.poller.poll(Some(timeout)) {
+                Ok(0) => {
+                    #[cfg(feature = "log")]
+                    log::trace!(target: "reactor", "Timeout");
+                    continue;
+                }
                 Ok(count) => count,
                 Err(err) => {
+                    #[cfg(feature = "log")]
+                    log::error!(target: "reactor", "Error during polling: {err}");
                     self.service.handle_error(err.into());
-                    0
+                    continue;
                 }
             };
-
-            if count == 0 {
-                continue;
-            }
 
             let instant = Instant::now();
             self.service.tick(instant);
 
-            self.handle_events(instant);
-            loop {
-                match self.cmd_recv.try_recv() {
-                    Err(chan::TryRecvError::Empty) => break,
-                    Err(chan::TryRecvError::Disconnected) => panic!("control channel is broken"),
-                    Ok(cmd) => self.service.handle_command(cmd),
+            let awoken = self.handle_events(instant);
+
+            self.handle_actions(instant);
+
+            // Process the commands only if we awaken by the waker
+            if awoken {
+                loop {
+                    match self.cmd_recv.try_recv() {
+                        Err(chan::TryRecvError::Empty) => break,
+                        Err(chan::TryRecvError::Disconnected) => {
+                            panic!("control channel is broken")
+                        }
+                        Ok(cmd) => self.service.handle_command(cmd),
+                    }
                 }
-            }
-            loop {
-                match self.ctl_recv.try_recv() {
-                    Err(chan::TryRecvError::Empty) => break,
-                    Err(chan::TryRecvError::Disconnected) => panic!("shutdown channel is broken"),
-                    Ok(Ctl::Shutdown) => return self.handle_shutdown(),
-                    Ok(Ctl::RegisterListener(listener)) => self
-                        .handle_action(Action::RegisterListener(listener), instant)
-                        .expect("register actions do not error"),
-                    Ok(Ctl::RegisterTransport(transport)) => self
-                        .handle_action(Action::RegisterTransport(transport), instant)
-                        .expect("register actions do not error"),
+                loop {
+                    match self.ctl_recv.try_recv() {
+                        Err(chan::TryRecvError::Empty) => break,
+                        Err(chan::TryRecvError::Disconnected) => {
+                            panic!("shutdown channel is broken")
+                        }
+                        Ok(Ctl::Shutdown) => return self.handle_shutdown(),
+                        Ok(Ctl::RegisterListener(listener)) => self
+                            .handle_action(Action::RegisterListener(listener), instant)
+                            .expect("register actions do not error"),
+                        Ok(Ctl::RegisterTransport(transport)) => self
+                            .handle_action(Action::RegisterTransport(transport), instant)
+                            .expect("register actions do not error"),
+                    }
                 }
             }
         }
     }
 
-    fn handle_events(&mut self, time: Instant) {
+    /// # Returns
+    ///
+    /// Whether it was awaken by a waker
+    fn handle_events(&mut self, time: Instant) -> bool {
+        let mut awoken = false;
+
         for (fd, io) in &mut self.poller {
             if fd == self.waker.as_raw_fd() {
                 #[cfg(feature = "log")]
                 log::trace!(target: "reactor", "Awoken by the controller");
 
-                reset_fd(&self.waker).expect("waker failure")
+                reset_fd(&self.waker).expect("waker failure");
+                awoken = true;
             } else if let Some(id) = self.listener_map.get(&fd) {
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Got {io} event from the listener {id} (fd={fd})");
@@ -378,9 +399,13 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             }
         }
 
+        awoken
+    }
+
+    fn handle_actions(&mut self, time: Instant) {
         while let Some(action) = self.service.next() {
             #[cfg(feature = "log")]
-            log::debug!(target: "reactor", "Handeling action {action} from the service");
+            log::debug!(target: "reactor", "Handling action {action} from the service");
 
             // NB: Deadlock may happen here if the service will generate events over and over
             // in the handle_* calls we may never get out of this loop
@@ -401,6 +426,10 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             Action::RegisterListener(listener) => {
                 let id = listener.id();
                 let fd = listener.as_raw_fd();
+
+                #[cfg(feature = "log")]
+                log::debug!(target: "reactor", "Registering listener on {id} (fd={fd})");
+
                 self.poller.register(&listener, IoType::read_only());
                 self.listeners.insert(id, listener);
                 self.listener_map.insert(fd, id);
@@ -408,6 +437,10 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             Action::RegisterTransport(transport) => {
                 let id = transport.id();
                 let fd = transport.as_raw_fd();
+
+                #[cfg(feature = "log")]
+                log::debug!(target: "reactor", "Registering transport on {id} (fd={fd})");
+
                 self.poller.register(&transport, IoType::read_write());
                 self.transports.insert(id, transport);
                 self.transport_map.insert(fd, id);
@@ -418,6 +451,10 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     .remove(&id)
                     .ok_or(Error::ListenerUnknown(id))?;
                 let fd = listener.as_raw_fd();
+
+                #[cfg(feature = "log")]
+                log::debug!(target: "reactor", "Handling over listener {id} (fd={fd})");
+
                 self.listener_map
                     .remove(&fd)
                     .expect("listener index content doesn't match registered listeners");
@@ -427,6 +464,10 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             Action::UnregisterTransport(id) => {
                 let transport = self.transports.remove(&id).ok_or(Error::PeerUnknown(id))?;
                 let fd = transport.as_raw_fd();
+
+                #[cfg(feature = "log")]
+                log::debug!(target: "reactor", "Handling over transport {id} (fd={fd})");
+
                 self.transport_map
                     .remove(&fd)
                     .expect("transport index content doesn't match registered transports");
@@ -434,22 +475,39 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 self.service.handover_transport(transport);
             }
             Action::Send(id, data) => {
-                let transport = self.transports.get_mut(&id).ok_or(Error::PeerUnknown(id))?;
+                #[cfg(feature = "log")]
+                log::trace!(target: "reactor", "Sending {} bytes to {id}", data.len());
+
+                let transport = self.transports.get_mut(&id).ok_or_else(|| {
+                    #[cfg(feature = "log")]
+                    log::error!(target: "reactor", "Transport {id} is not in the reactor");
+
+                    Error::PeerUnknown(id)
+                })?;
                 // If we fail on sending any message this means disconnection (I/O write
                 // has failed for a given transport). We report error -- and lose all other
                 // messages we planned to send
                 match transport.write_nonblocking(&data) {
                     IoStatus::Success(_) => {}
-                    IoStatus::WouldBlock => {}
+                    IoStatus::WouldBlock => {
+                        #[cfg(feature = "log")]
+                        log::warn!(target: "reactor", "Transport {id} queue is filled?");
+                    }
                     IoStatus::Shutdown => {
                         unreachable!("orderly remote shutdown is not possible during write")
                     }
                     IoStatus::Err(err) => {
+                        #[cfg(feature = "log")]
+                        log::error!(target: "reactor", "Transport {id} got disconnected, reporting...");
+
                         return Err(Error::PeerDisconnected(id, err))?;
                     }
                 }
             }
             Action::SetTimer(duration) => {
+                #[cfg(feature = "log")]
+                log::debug!(target: "reactor", "Adding timer {duration:?}");
+
                 self.timeouts.register((), time + duration);
             }
         }
@@ -457,6 +515,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     }
 
     fn handle_shutdown(self) {
+        #[cfg(feature = "log")]
+        log::info!(target: "reactor", "Shutdown");
+
         // We just drop here?
     }
 }
