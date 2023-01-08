@@ -35,9 +35,13 @@ impl Poll for Poller {
     }
 
     fn set_interest(&mut self, fd: &impl AsRawFd, interest: IoType) -> bool {
+        let fd = fd.as_raw_fd();
+
         #[cfg(feature = "log")]
-        log::trace!(target: "popol", "Setting interest `{interest}` on {}", fd.as_raw_fd());
-        self.poll.set(&fd.as_raw_fd(), interest.into())
+        log::trace!(target: "popol", "Setting interest `{interest}` on {}", fd);
+
+        self.poll.unset(&fd, (!interest).into());
+        self.poll.set(&fd, interest.into())
     }
 
     fn poll(&mut self, timeout: Option<Duration>) -> io::Result<usize> {
@@ -61,8 +65,8 @@ impl Poll for Poller {
 
         for (fd, ev) in self.poll.events() {
             let ev = IoType {
-                is_readable: ev.is_readable(),
-                is_writable: ev.is_writable(),
+                read: ev.is_readable(),
+                write: ev.is_writable(),
             };
             #[cfg(feature = "log")]
             log::trace!(target: "popol", "Got event `{ev}` for {fd}");
@@ -95,10 +99,10 @@ impl Iterator for Poller {
 impl From<IoType> for popol::Event {
     fn from(ev: IoType) -> Self {
         let mut e = popol::event::NONE;
-        if ev.is_readable {
+        if ev.read {
             e |= popol::event::READ;
         }
-        if ev.is_writable {
+        if ev.write {
             e |= popol::event::WRITE;
         }
         e

@@ -378,7 +378,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 awoken = true;
             } else if let Some(id) = self.listener_map.get(&fd) {
                 #[cfg(feature = "log")]
-                log::debug!(target: "reactor", "Got {io} event from the listener {id} (fd={fd})");
+                log::debug!(target: "reactor", "Got `{io}` event from the listener {id} (fd={fd})");
 
                 let res = self.listeners.get_mut(id).expect("resource disappeared");
                 for io in io {
@@ -388,7 +388,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 }
             } else if let Some(id) = self.transport_map.get(&fd) {
                 #[cfg(feature = "log")]
-                log::trace!(target: "reactor", "Got {io} event from the transport {id} (fd={fd})");
+                log::trace!(target: "reactor", "Got `{io}` event from the transport {id} (fd={fd})");
 
                 let res = self.transports.get_mut(id).expect("resource disappeared");
                 for io in io {
@@ -441,7 +441,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Registering transport on {id} (fd={fd})");
 
-                self.poller.register(&transport, IoType::read_write());
+                self.poller.register(&transport, IoType::read_only());
                 self.transports.insert(id, transport);
                 self.transport_map.insert(fd, id);
             }

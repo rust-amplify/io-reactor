@@ -1,9 +1,9 @@
 pub mod popol;
 
 use std::fmt::{self, Display, Formatter};
-use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::time::Duration;
+use std::{io, ops};
 
 use crate::resource::Io;
 
@@ -11,30 +11,61 @@ use crate::resource::Io;
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 pub struct IoType {
     /// Specifies whether I/O source has data to read.
-    pub is_readable: bool,
+    pub read: bool,
     /// Specifies whether I/O source is ready for write operations.
-    pub is_writable: bool,
+    pub write: bool,
 }
 
 impl IoType {
+    pub fn none() -> Self {
+        Self {
+            read: false,
+            write: false,
+        }
+    }
+
     pub fn read_only() -> Self {
         Self {
-            is_readable: true,
-            is_writable: false,
+            read: true,
+            write: false,
         }
     }
 
     pub fn write_only() -> Self {
         Self {
-            is_readable: false,
-            is_writable: true,
+            read: false,
+            write: true,
         }
     }
 
     pub fn read_write() -> Self {
         Self {
-            is_readable: true,
-            is_writable: true,
+            read: true,
+            write: true,
+        }
+    }
+
+    pub fn is_none(self) -> bool {
+        self.read == false && self.write == false
+    }
+    pub fn is_read_only(self) -> bool {
+        self.read == true && self.write == false
+    }
+    pub fn is_write_only(self) -> bool {
+        self.read == false && self.write == true
+    }
+    pub fn is_read_write(self) -> bool {
+        self.read == true && self.write == true
+    }
+}
+
+impl ops::Not for IoType {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        Self {
+            read: !self.read,
+            write: !self.write,
         }
     }
 }
@@ -43,11 +74,11 @@ impl Iterator for IoType {
     type Item = Io;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.is_writable {
-            self.is_writable = false;
+        if self.write {
+            self.write = false;
             Some(Io::Write)
-        } else if self.is_readable {
-            self.is_readable = false;
+        } else if self.read {
+            self.read = false;
             Some(Io::Read)
         } else {
             None
@@ -57,13 +88,17 @@ impl Iterator for IoType {
 
 impl Display for IoType {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        if self.is_readable {
-            f.write_str("r")?;
+        if self.is_none() {
+            f.write_str("none")
+        } else if self.is_read_write() {
+            f.write_str("read-write")
+        } else if self.read {
+            f.write_str("read")
+        } else if self.write {
+            f.write_str("write")
+        } else {
+            unreachable!()
         }
-        if self.is_writable {
-            f.write_str("w")?;
-        }
-        Ok(())
     }
 }
 
