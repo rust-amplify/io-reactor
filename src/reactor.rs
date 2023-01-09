@@ -414,7 +414,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     }
                     Err(IoFail::Connectivity(flags)) => {
                         #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Listener {id} hanged up (OS flags {flags:#b})");
+                        log::trace!(target: "reactor", "Listener {id} hung up (OS flags {flags:#b})");
 
                         let listener = self.listeners.remove(id).expect("resource disappeared");
                         self.service
@@ -458,7 +458,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     }
                 }
             } else {
-                unreachable!()
+                panic!(
+                    "file descriptor in reactor which is not a known waker, listener or transport"
+                )
             }
         }
 
