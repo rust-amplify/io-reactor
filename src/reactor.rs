@@ -29,8 +29,8 @@ pub enum Error<L: Resource, T: Resource> {
     /// unable to write to transport {0}. Details: {1:?}
     WriteFailure(T::Id, io::Error),
 
-    /// writing to transport {0} before it is ready: a bug in a business logic
-    WriteLogicError(T::Id),
+    /// writing to transport {0} before it is ready (business logic bug)
+    WriteLogicError(T::Id, Vec<u8>),
 
     /// transport {0} got disconnected during poll operation.
     ListenerDisconnect(L::Id, L, i16),
@@ -474,7 +474,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             // in the handle_* calls we may never get out of this loop
             if let Err(err) = self.handle_action(action, time) {
                 #[cfg(feature = "log")]
-                log::error!(target: "reactor", "Error during the action: {err}");
+                log::error!(target: "reactor", "Error: {err}");
                 self.service.handle_error(err);
             }
         }
@@ -555,7 +555,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         #[cfg(feature = "log")]
                         log::error!(target: "reactor", internal = true; 
                                 "An attempt to write to transport {id} before it got ready");
-                        Error::WriteLogicError(id)
+                        Error::WriteLogicError(id, data)
                     }
                     WriteError::Io(e) => {
                         #[cfg(feature = "log")]
