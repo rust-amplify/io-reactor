@@ -414,7 +414,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     }
                     Err(IoFail::Connectivity(flags)) => {
                         #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Listener {id} hanged up (OS flags {flags:#b}");
+                        log::trace!(target: "reactor", "Listener {id} hanged up (OS flags {flags:#b})");
 
                         let listener = self.listeners.remove(id).expect("resource disappeared");
                         self.service
@@ -422,7 +422,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     }
                     Err(IoFail::Os(flags)) => {
                         #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Listener {id} errored (OS flags {flags:#b}");
+                        log::trace!(target: "reactor", "Listener {id} errored (OS flags {flags:#b})");
 
                         self.service
                             .handle_error(Error::ListenerPollError(*id, flags));
@@ -443,7 +443,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     }
                     Err(IoFail::Connectivity(flags)) => {
                         #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Transport {id} hanged up (OS flags {flags:#b}");
+                        log::trace!(target: "reactor", "Transport {id} hanged up (OS flags {flags:#b})");
 
                         let transport = self.transports.remove(id).expect("resource disappeared");
                         self.service
@@ -451,7 +451,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     }
                     Err(IoFail::Os(flags)) => {
                         #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Transport {id} errored (OS flags {flags:#b}");
+                        log::trace!(target: "reactor", "Transport {id} errored (OS flags {flags:#b})");
 
                         self.service
                             .handle_error(Error::TransportPollError(*id, flags));
