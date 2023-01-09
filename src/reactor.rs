@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter};
 use std::io;
 use std::io::Write;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -10,27 +10,44 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel as chan;
 
-use crate::poller::{IoType, Poll};
-use crate::{IoStatus, Resource, ResourceId, TimeoutManager, WriteNonblocking};
+use crate::poller::{IoFail, IoType, Poll};
+use crate::{IoStatus, Resource, TimeoutManager, WriteNonblocking};
 
 /// Maximum amount of time to wait for i/o.
 const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
-#[derive(Debug, Display, Error, From)]
+#[derive(Error, Display, From)]
 #[display(doc_comments)]
-pub enum Error<L: ResourceId, T: ResourceId> {
+pub enum Error<L: Resource, T: Resource> {
     /// unknown listener {0}
-    ListenerUnknown(L),
+    ListenerUnknown(L::Id),
 
-    /// no connection with to peer {0}
-    PeerUnknown(T),
+    /// unknown transport {0}
+    TransportUnknown(T::Id),
 
-    /// connection with peer {0} got broken
-    PeerDisconnected(T, io::Error),
+    /// unable to write to transport {0}. Details: {1:?}
+    WriteFailure(T::Id, io::Error),
 
-    /// Error during poll operation
-    #[from]
+    /// transport {0} got disconnected during poll operation.
+    ListenerDisconnect(L::Id, L, i16),
+
+    /// transport {0} got disconnected during poll operation.
+    TransportDisconnect(T::Id, T, i16),
+
+    /// poll on listener {0} has returned error.
+    ListenerPollError(L::Id, i16),
+
+    /// poll on transport {0} has returned error.
+    TransportPollError(T::Id, i16),
+
+    /// polling multiple resources has failed. Details: {0:?}
     Poll(io::Error),
+}
+
+impl<L: Resource, T: Resource> Debug for Error<L, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
+    }
 }
 
 #[derive(Display)]
@@ -74,10 +91,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
 
     fn handle_command(&mut self, cmd: Self::Command);
 
-    fn handle_error(
-        &mut self,
-        err: Error<<Self::Listener as Resource>::Id, <Self::Transport as Resource>::Id>,
-    );
+    fn handle_error(&mut self, err: Error<Self::Listener, Self::Transport>);
 
     /// Called by the reactor upon receiving [`Action::UnregisterListener`]
     fn handover_listener(&mut self, listener: Self::Listener);
@@ -321,7 +335,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 Err(err) => {
                     #[cfg(feature = "log")]
                     log::error!(target: "reactor", "Error during polling: {err}");
-                    self.service.handle_error(err.into());
+                    self.service.handle_error(Error::Poll(err));
                     continue;
                 }
             };
@@ -369,33 +383,78 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     fn handle_events(&mut self, time: Instant) -> bool {
         let mut awoken = false;
 
-        for (fd, io) in &mut self.poller {
+        for (fd, res) in &mut self.poller {
             if fd == self.waker.as_raw_fd() {
+                if let Err(err) = res {
+                    log::error!(target: "reactor", "Polling waker has failed: {err}");
+                    panic!("waker failure");
+                };
+
                 #[cfg(feature = "log")]
                 log::trace!(target: "reactor", "Awoken by the controller");
 
                 reset_fd(&self.waker).expect("waker failure");
                 awoken = true;
             } else if let Some(id) = self.listener_map.get(&fd) {
-                #[cfg(feature = "log")]
-                log::trace!(target: "reactor", "Got `{io}` event from the listener {id} (fd={fd})");
+                match res {
+                    Ok(io) => {
+                        #[cfg(feature = "log")]
+                        log::trace!(target: "reactor", "Got `{io}` event from listener {id} (fd={fd})");
 
-                let res = self.listeners.get_mut(id).expect("resource disappeared");
-                for io in io {
-                    if let Some(event) = res.handle_io(io) {
-                        self.service.handle_listener_event(*id, event, time);
+                        let listener = self.listeners.get_mut(id).expect("resource disappeared");
+                        for io in io {
+                            if let Some(event) = listener.handle_io(io) {
+                                self.service.handle_listener_event(*id, event, time);
+                            }
+                        }
+                    }
+                    Err(IoFail::Connectivity(flags)) => {
+                        #[cfg(feature = "log")]
+                        log::trace!(target: "reactor", "Listener {id} hanged up (OS flags {flags:#b}");
+
+                        let listener = self.listeners.remove(id).expect("resource disappeared");
+                        self.service
+                            .handle_error(Error::ListenerDisconnect(*id, listener, flags));
+                    }
+                    Err(IoFail::Os(flags)) => {
+                        #[cfg(feature = "log")]
+                        log::trace!(target: "reactor", "Listener {id} errored (OS flags {flags:#b}");
+
+                        self.service
+                            .handle_error(Error::ListenerPollError(*id, flags));
                     }
                 }
             } else if let Some(id) = self.transport_map.get(&fd) {
-                #[cfg(feature = "log")]
-                log::trace!(target: "reactor", "Got `{io}` event from the transport {id} (fd={fd})");
+                match res {
+                    Ok(io) => {
+                        #[cfg(feature = "log")]
+                        log::trace!(target: "reactor", "Got `{io}` event from transport {id} (fd={fd})");
 
-                let res = self.transports.get_mut(id).expect("resource disappeared");
-                for io in io {
-                    if let Some(event) = res.handle_io(io) {
-                        self.service.handle_transport_event(*id, event, time);
+                        let transport = self.transports.get_mut(id).expect("resource disappeared");
+                        for io in io {
+                            if let Some(event) = transport.handle_io(io) {
+                                self.service.handle_transport_event(*id, event, time);
+                            }
+                        }
+                    }
+                    Err(IoFail::Connectivity(flags)) => {
+                        #[cfg(feature = "log")]
+                        log::trace!(target: "reactor", "Transport {id} hanged up (OS flags {flags:#b}");
+
+                        let transport = self.transports.remove(id).expect("resource disappeared");
+                        self.service
+                            .handle_error(Error::TransportDisconnect(*id, transport, flags));
+                    }
+                    Err(IoFail::Os(flags)) => {
+                        #[cfg(feature = "log")]
+                        log::trace!(target: "reactor", "Transport {id} errored (OS flags {flags:#b}");
+
+                        self.service
+                            .handle_error(Error::TransportPollError(*id, flags));
                     }
                 }
+            } else {
+                unreachable!()
             }
         }
 
@@ -421,7 +480,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         &mut self,
         action: Action<H::Listener, H::Transport>,
         time: Instant,
-    ) -> Result<(), Error<<H::Listener as Resource>::Id, <H::Transport as Resource>::Id>> {
+    ) -> Result<(), Error<H::Listener, H::Transport>> {
         match action {
             Action::RegisterListener(listener) => {
                 let id = listener.id();
@@ -462,7 +521,10 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 self.service.handover_listener(listener);
             }
             Action::UnregisterTransport(id) => {
-                let transport = self.transports.remove(&id).ok_or(Error::PeerUnknown(id))?;
+                let transport = self
+                    .transports
+                    .remove(&id)
+                    .ok_or(Error::TransportUnknown(id))?;
                 let fd = transport.as_raw_fd();
 
                 #[cfg(feature = "log")]
@@ -482,7 +544,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     #[cfg(feature = "log")]
                     log::error!(target: "reactor", "Transport {id} is not in the reactor");
 
-                    Error::PeerUnknown(id)
+                    Error::TransportUnknown(id)
                 })?;
                 // If we fail on sending any message this means disconnection (I/O write
                 // has failed for a given transport). We report error -- and lose all other
@@ -500,7 +562,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         #[cfg(feature = "log")]
                         log::error!(target: "reactor", "Transport {id} got disconnected, reporting...");
 
-                        return Err(Error::PeerDisconnected(id, err))?;
+                        return Err(Error::WriteFailure(id, err))?;
                     }
                 }
             }

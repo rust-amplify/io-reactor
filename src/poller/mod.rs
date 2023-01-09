@@ -102,10 +102,19 @@ impl Display for IoType {
     }
 }
 
+#[derive(Copy, Clone, Debug, Display, Error)]
+#[display(doc_comments)]
+pub enum IoFail {
+    /// connection is absent (POSIX events {0:#b})
+    Connectivity(i16),
+    /// OS-level error (POSIX events {0:#b})
+    Os(i16),
+}
+
 pub trait Poll
 where
-    Self: Send + Iterator<Item = (RawFd, IoType)>,
-    for<'a> &'a mut Self: Iterator<Item = (RawFd, IoType)>,
+    Self: Send + Iterator<Item = (RawFd, Result<IoType, IoFail>)>,
+    for<'a> &'a mut Self: Iterator<Item = (RawFd, Result<IoType, IoFail>)>,
 {
     fn register(&mut self, fd: &impl AsRawFd, interest: IoType);
     fn unregister(&mut self, fd: &impl AsRawFd);

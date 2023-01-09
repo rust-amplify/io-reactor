@@ -3,13 +3,13 @@ use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::time::Duration;
 
-use crate::poller::{IoType, Poll};
+use crate::poller::{IoFail, IoType, Poll};
 
 /// Manager for a set of resources which are polled for an event loop by the
 /// re-actor by using [`popol`] library.
 pub struct Poller {
     poll: popol::Poll<RawFd>,
-    events: VecDeque<(RawFd, IoType)>,
+    events: VecDeque<(RawFd, Result<IoType, IoFail>)>,
 }
 
 impl Poller {
@@ -63,14 +63,20 @@ impl Poll for Poller {
         #[cfg(feature = "log")]
         log::trace!(target: "popol", "Poll resulted in {} event(s)", self.poll.len());
 
-        for (fd, ev) in self.poll.events() {
-            let ev = IoType {
-                read: ev.is_readable(),
-                write: ev.is_writable(),
+        for (fd, fired) in self.poll.events() {
+            let res = if fired.has_hangup() {
+                Err(IoFail::Connectivity(fired.fired_events()))
+            } else if fired.is_err() {
+                Err(IoFail::Os(fired.fired_events()))
+            } else {
+                Ok(IoType {
+                    read: fired.is_readable(),
+                    write: fired.is_writable(),
+                })
             };
             #[cfg(feature = "log")]
-            log::trace!(target: "popol", "Got event `{ev}` for {fd}");
-            self.events.push_back((*fd, ev))
+            log::trace!(target: "popol", "Got `{res:?}` for {fd}");
+            self.events.push_back((*fd, res))
         }
 
         Ok(self.events.len() - len)
@@ -78,14 +84,19 @@ impl Poll for Poller {
 }
 
 impl Iterator for Poller {
-    type Item = (RawFd, IoType);
+    type Item = (RawFd, Result<IoType, IoFail>);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.events.pop_front() {
-            Some((fd, ev)) => {
+            Some((fd, Ok(io))) => {
                 #[cfg(feature = "log")]
-                log::trace!(target: "popol", "Popped event `{ev}` for {fd} from the queue");
-                Some((fd, ev))
+                log::trace!(target: "popol", "Popped event `{io}` for {fd} from the queue");
+                Some((fd, Ok(io)))
+            }
+            Some((fd, Err(err))) => {
+                #[cfg(feature = "log")]
+                log::trace!(target: "popol", "Popped error `{err}` for {fd} from the queue");
+                Some((fd, Err(err)))
             }
             None => {
                 #[cfg(feature = "log")]
@@ -96,7 +107,7 @@ impl Iterator for Poller {
     }
 }
 
-impl From<IoType> for popol::Event {
+impl From<IoType> for popol::PollEvents {
     fn from(ev: IoType) -> Self {
         let mut e = popol::event::NONE;
         if ev.read {
