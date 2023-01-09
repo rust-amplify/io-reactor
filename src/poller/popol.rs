@@ -60,9 +60,6 @@ impl Poll for Poller {
             return Ok(0);
         }
 
-        #[cfg(feature = "log")]
-        log::trace!(target: "popol", "Poll resulted in {} event(s)", self.poll.len());
-
         for (fd, fired) in self.poll.events() {
             let res = if fired.has_hangup() {
                 Err(IoFail::Connectivity(fired.fired_events()))
@@ -78,6 +75,9 @@ impl Poll for Poller {
             log::trace!(target: "popol", "Got `{res:?}` for {fd}");
             self.events.push_back((*fd, res))
         }
+
+        #[cfg(feature = "log")]
+        log::trace!(target: "popol", "Poll resulted in {} new event(s)", self.events.len() - len);
 
         Ok(self.events.len() - len)
     }
