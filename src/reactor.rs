@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel as chan;
 
 use crate::poller::{IoFail, IoType, Poll};
-use crate::{IoStatus, Resource, TimeoutManager, WriteNonblocking};
+use crate::resource::WriteError;
+use crate::{Resource, TimeoutManager, WriteAtomic};
 
 /// Maximum amount of time to wait for i/o.
 const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -27,6 +28,9 @@ pub enum Error<L: Resource, T: Resource> {
 
     /// unable to write to transport {0}. Details: {1:?}
     WriteFailure(T::Id, io::Error),
+
+    /// writing to transport {0} before it is ready: a bug in a business logic
+    WriteLogicError(T::Id),
 
     /// transport {0} got disconnected during poll operation.
     ListenerDisconnect(L::Id, L, i16),
@@ -546,25 +550,19 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
                     Error::TransportUnknown(id)
                 })?;
-                // If we fail on sending any message this means disconnection (I/O write
-                // has failed for a given transport). We report error -- and lose all other
-                // messages we planned to send
-                match transport.write_nonblocking(&data) {
-                    IoStatus::Success(_) => {}
-                    IoStatus::WouldBlock => {
+                transport.write_atomic(&data).map_err(|err| match err {
+                    WriteError::NotReady => {
                         #[cfg(feature = "log")]
-                        log::warn!(target: "reactor", "Transport {id} queue is filled?");
+                        log::error!(target: "reactor", internal = true; 
+                                "An attempt to write to transport {id} before it got ready");
+                        Error::WriteLogicError(id)
                     }
-                    IoStatus::Shutdown => {
-                        unreachable!("orderly remote shutdown is not possible during write")
-                    }
-                    IoStatus::Err(err) => {
+                    WriteError::Io(e) => {
                         #[cfg(feature = "log")]
-                        log::error!(target: "reactor", "Transport {id} got disconnected, reporting...");
-
-                        return Err(Error::WriteFailure(id, err))?;
+                        log::error!(target: "reactor", "Error writing to transport {id}: {e:?}");
+                        Error::WriteFailure(id, e)
                     }
-                }
+                })?;
             }
             Action::SetTimer(duration) => {
                 #[cfg(feature = "log")]
