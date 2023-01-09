@@ -349,8 +349,6 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
             let awoken = self.handle_events(instant);
 
-            self.handle_actions(instant);
-
             // Process the commands only if we awaken by the waker
             if awoken {
                 loop {
@@ -378,6 +376,8 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     }
                 }
             }
+
+            self.handle_actions(instant);
         }
     }
 
