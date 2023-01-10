@@ -387,6 +387,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     fn handle_events(&mut self, time: Instant) -> bool {
         let mut awoken = false;
 
+        let mut unregister_queue = vec![];
         for (fd, res) in &mut self.poller {
             if fd == self.waker.as_raw_fd() {
                 if let Err(err) = res {
@@ -417,6 +418,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         log::trace!(target: "reactor", "Listener {id} hung up (OS flags {flags:#b})");
 
                         let listener = self.listeners.remove(id).expect("resource disappeared");
+                        unregister_queue.push(listener.as_raw_fd());
                         self.service
                             .handle_error(Error::ListenerDisconnect(*id, listener, flags));
                     }
@@ -446,6 +448,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         log::trace!(target: "reactor", "Transport {id} hanged up (OS flags {flags:#b})");
 
                         let transport = self.transports.remove(id).expect("resource disappeared");
+                        unregister_queue.push(transport.as_raw_fd());
                         self.service
                             .handle_error(Error::TransportDisconnect(*id, transport, flags));
                     }
@@ -462,6 +465,11 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     "file descriptor in reactor which is not a known waker, listener or transport"
                 )
             }
+        }
+
+        // We need this b/c of borrow checker
+        for fd in unregister_queue {
+            self.poller.unregister(&fd);
         }
 
         awoken
