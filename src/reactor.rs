@@ -75,7 +75,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     type Transport: Resource;
     type Command: Debug + Send;
 
-    fn tick(&mut self, time: Instant);
+    fn tick(&mut self, time: Duration);
 
     fn handle_wakeup(&mut self);
 
@@ -83,14 +83,14 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
         &mut self,
         id: <Self::Listener as Resource>::Id,
         event: <Self::Listener as Resource>::Event,
-        time: Instant,
+        time: Duration,
     );
 
     fn handle_transport_event(
         &mut self,
         id: <Self::Transport as Resource>::Id,
         event: <Self::Transport as Resource>::Event,
-        time: Instant,
+        time: Duration,
     );
 
     fn handle_command(&mut self, cmd: Self::Command);
@@ -312,6 +312,8 @@ pub struct Runtime<H: Handler, P: Poll> {
 
 impl<H: Handler, P: Poll> Runtime<H, P> {
     fn run(mut self) {
+        let since = Instant::now();
+
         loop {
             let timeout = self
                 .timeouts
@@ -344,10 +346,10 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 }
             };
 
-            let instant = Instant::now();
-            self.service.tick(instant);
+            let ts = since.elapsed();
+            self.service.tick(ts);
 
-            let awoken = self.handle_events(instant);
+            let awoken = self.handle_events(ts);
 
             // Process the commands only if we awaken by the waker
             if awoken {
@@ -368,23 +370,23 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         }
                         Ok(Ctl::Shutdown) => return self.handle_shutdown(),
                         Ok(Ctl::RegisterListener(listener)) => self
-                            .handle_action(Action::RegisterListener(listener), instant)
+                            .handle_action(Action::RegisterListener(listener), ts)
                             .expect("register actions do not error"),
                         Ok(Ctl::RegisterTransport(transport)) => self
-                            .handle_action(Action::RegisterTransport(transport), instant)
+                            .handle_action(Action::RegisterTransport(transport), ts)
                             .expect("register actions do not error"),
                     }
                 }
             }
 
-            self.handle_actions(instant);
+            self.handle_actions(ts);
         }
     }
 
     /// # Returns
     ///
     /// Whether it was awaken by a waker
-    fn handle_events(&mut self, time: Instant) -> bool {
+    fn handle_events(&mut self, time: Duration) -> bool {
         let mut awoken = false;
 
         for (fd, res) in &mut self.poller {
@@ -467,7 +469,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         awoken
     }
 
-    fn handle_actions(&mut self, time: Instant) {
+    fn handle_actions(&mut self, time: Duration) {
         while let Some(action) = self.service.next() {
             #[cfg(feature = "log")]
             log::trace!(target: "reactor", "Handling action {action} from the service");
@@ -485,7 +487,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     fn handle_action(
         &mut self,
         action: Action<H::Listener, H::Transport>,
-        time: Instant,
+        time: Duration,
     ) -> Result<(), Error<H::Listener, H::Transport>> {
         match action {
             Action::RegisterListener(listener) => {
@@ -570,7 +572,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Adding timer {duration:?}");
 
-                self.timeouts.register((), time + duration);
+                self.timeouts.register((), Instant::now() + duration);
             }
         }
         Ok(())
