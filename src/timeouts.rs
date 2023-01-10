@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Manages timers and triggers timeouts.
 #[derive(Debug)]

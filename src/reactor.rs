@@ -6,7 +6,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 use crossbeam_channel as chan;
 
@@ -312,14 +312,11 @@ pub struct Runtime<H: Handler, P: Poll> {
 
 impl<H: Handler, P: Poll> Runtime<H, P> {
     fn run(mut self) {
-        let since = Instant::now();
-
         loop {
-            let timeout = self
-                .timeouts
-                .next(since.elapsed())
-                .unwrap_or(WAIT_TIMEOUT)
-                .into();
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("system time");
+            let timeout = self.timeouts.next(now).unwrap_or(WAIT_TIMEOUT).into();
 
             for res in self.listeners.values() {
                 self.poller.set_interest(res, res.interests());
@@ -346,10 +343,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 }
             };
 
-            let ts = since.elapsed();
-            self.service.tick(ts);
+            self.service.tick(now);
 
-            let awoken = self.handle_events(ts);
+            let awoken = self.handle_events(now);
 
             // Process the commands only if we awaken by the waker
             if awoken {
@@ -370,16 +366,16 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         }
                         Ok(Ctl::Shutdown) => return self.handle_shutdown(),
                         Ok(Ctl::RegisterListener(listener)) => self
-                            .handle_action(Action::RegisterListener(listener), ts)
+                            .handle_action(Action::RegisterListener(listener), now)
                             .expect("register actions do not error"),
                         Ok(Ctl::RegisterTransport(transport)) => self
-                            .handle_action(Action::RegisterTransport(transport), ts)
+                            .handle_action(Action::RegisterTransport(transport), now)
                             .expect("register actions do not error"),
                     }
                 }
             }
 
-            self.handle_actions(ts);
+            self.handle_actions(now);
         }
     }
 
@@ -570,9 +566,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             }
             Action::SetTimer(duration) => {
                 #[cfg(feature = "log")]
-                log::debug!(target: "reactor", "Adding timer {duration:?}");
+                log::debug!(target: "reactor", "Adding timer {duration:?} from now");
 
-                self.timeouts.register((), duration);
+                self.timeouts.register((), time + duration);
             }
         }
         Ok(())
