@@ -317,7 +317,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         loop {
             let timeout = self
                 .timeouts
-                .next(Instant::now())
+                .next(since.elapsed())
                 .unwrap_or(WAIT_TIMEOUT)
                 .into();
 
@@ -572,7 +572,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Adding timer {duration:?}");
 
-                self.timeouts.register((), Instant::now() + duration);
+                self.timeouts.register((), duration);
             }
         }
         Ok(())
