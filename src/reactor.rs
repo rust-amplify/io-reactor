@@ -336,7 +336,7 @@ pub struct Runtime<H: Handler, P: Poll> {
 }
 
 impl<H: Handler, P: Poll> Runtime<H, P> {
-    pub fn with(service: H, mut poller: P) -> io::Result<Self> {
+    pub fn with(service: H, poller: P) -> io::Result<Self> {
         let (ctl_send, ctl_recv) = chan::unbounded();
         let (cmd_send, cmd_recv) = chan::unbounded();
 
