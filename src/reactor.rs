@@ -125,11 +125,18 @@ impl<S: Handler> Reactor<S> {
         waker_reader.set_nonblocking(true)?;
         waker_writer.set_nonblocking(true)?;
 
+        let controller = Controller {
+            cmd_send,
+            ctl_send,
+            waker: Arc::new(Mutex::new(waker_writer)),
+        };
+
         #[cfg(feature = "log")]
         log::debug!(target: "reactor-controller", "Initializing reactor thread...");
 
         let builder = builder.unwrap_or_else(|| thread::Builder::new());
 
+        let runtime_controller = controller.clone();
         let thread = builder.spawn(move || {
             #[cfg(feature = "log")]
             log::debug!(target: "reactor", "Registering waker (fd {})", waker_reader.as_raw_fd());
@@ -138,6 +145,7 @@ impl<S: Handler> Reactor<S> {
             let runtime = Runtime {
                 service,
                 poller,
+                controller: runtime_controller,
                 cmd_recv,
                 ctl_recv,
                 listeners: empty!(),
@@ -154,11 +162,6 @@ impl<S: Handler> Reactor<S> {
             runtime.run();
         })?;
 
-        let controller = Controller {
-            cmd_send,
-            ctl_send,
-            waker: Arc::new(Mutex::new(waker_writer)),
-        };
         // Waking up to consume actions which were provided by the service on launch
         controller.wake()?;
         Ok(Self { thread, controller })
@@ -307,6 +310,7 @@ fn reset_fd(fd: &impl AsRawFd) -> io::Result<()> {
 pub struct Runtime<H: Handler, P: Poll> {
     service: H,
     poller: P,
+    controller: Controller<H>,
     cmd_recv: chan::Receiver<H::Command>,
     ctl_recv: chan::Receiver<Ctl<H>>,
     listener_map: HashMap<RawFd, <H::Listener as Resource>::Id>,
@@ -318,6 +322,39 @@ pub struct Runtime<H: Handler, P: Poll> {
 }
 
 impl<H: Handler, P: Poll> Runtime<H, P> {
+    pub fn with(service: H, mut poller: P) -> io::Result<Self> {
+        let (ctl_send, ctl_recv) = chan::unbounded();
+        let (cmd_send, cmd_recv) = chan::unbounded();
+
+        let (waker_writer, waker_reader) = UnixStream::pair()?;
+        waker_reader.set_nonblocking(true)?;
+        waker_writer.set_nonblocking(true)?;
+
+        let controller = Controller {
+            cmd_send,
+            ctl_send,
+            waker: Arc::new(Mutex::new(waker_writer)),
+        };
+
+        Ok(Runtime {
+            service,
+            poller,
+            controller,
+            cmd_recv,
+            ctl_recv,
+            listeners: empty!(),
+            transports: empty!(),
+            listener_map: empty!(),
+            transport_map: empty!(),
+            waker: waker_reader,
+            timeouts: TimeoutManager::new(Duration::from_secs(1)),
+        })
+    }
+
+    pub fn controller(&self) -> Controller<H> {
+        self.controller.clone()
+    }
+
     fn run(mut self) {
         loop {
             let before_poll = SystemTime::now()
