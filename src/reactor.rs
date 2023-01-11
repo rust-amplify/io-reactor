@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
-use std::io;
 use std::io::Write;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
+use std::{io, thread};
 
 use crossbeam_channel as chan;
 
@@ -109,7 +109,11 @@ pub struct Reactor<S: Handler> {
 }
 
 impl<S: Handler> Reactor<S> {
-    pub fn new<P: Poll>(service: S, mut poller: P) -> Result<Self, io::Error>
+    pub fn new<P: Poll>(
+        service: S,
+        mut poller: P,
+        builder: Option<thread::Builder>,
+    ) -> Result<Self, io::Error>
     where
         S: 'static,
         P: 'static,
@@ -123,7 +127,10 @@ impl<S: Handler> Reactor<S> {
 
         #[cfg(feature = "log")]
         log::debug!(target: "reactor-controller", "Initializing reactor thread...");
-        let thread = std::thread::spawn(move || {
+
+        let builder = builder.unwrap_or_else(|| thread::Builder::new());
+
+        let thread = builder.spawn(move || {
             #[cfg(feature = "log")]
             log::debug!(target: "reactor", "Registering waker (fd {})", waker_reader.as_raw_fd());
             poller.register(&waker_reader, IoType::read_only());
@@ -145,7 +152,7 @@ impl<S: Handler> Reactor<S> {
             log::info!(target: "reactor", "Entering reactor event loop");
 
             runtime.run();
-        });
+        })?;
 
         let controller = Controller {
             cmd_send,
