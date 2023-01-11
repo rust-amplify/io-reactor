@@ -109,10 +109,18 @@ pub struct Reactor<S: Handler> {
 }
 
 impl<S: Handler> Reactor<S> {
-    pub fn new<P: Poll>(
+    pub fn new<P: Poll>(service: S, poller: P) -> Result<Self, io::Error>
+    where
+        S: 'static,
+        P: 'static,
+    {
+        Reactor::with(service, poller, thread::Builder::new())
+    }
+
+    pub fn with<P: Poll>(
         service: S,
         mut poller: P,
-        builder: Option<thread::Builder>,
+        builder: thread::Builder,
     ) -> Result<Self, io::Error>
     where
         S: 'static,
@@ -133,8 +141,6 @@ impl<S: Handler> Reactor<S> {
 
         #[cfg(feature = "log")]
         log::debug!(target: "reactor-controller", "Initializing reactor thread...");
-
-        let builder = builder.unwrap_or_else(|| thread::Builder::new());
 
         let runtime_controller = controller.clone();
         let thread = builder.spawn(move || {
