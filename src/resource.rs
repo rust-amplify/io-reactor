@@ -12,10 +12,10 @@ pub enum Io {
     Write,
 }
 
-pub trait ResourceId: Copy + Eq + Ord + Hash + Debug + Display {}
+pub trait ResourceId: Copy + Eq + Ord + Hash + Send + Debug + Display {}
 
 pub trait Resource: AsRawFd + WriteAtomic + Send {
-    type Id: ResourceId + Send;
+    type Id: ResourceId;
     type Event;
 
     fn id(&self) -> Self::Id;
@@ -55,10 +55,19 @@ pub trait WriteAtomic: io::Write {
         if !self.is_ready_to_write() {
             return Err(WriteError::NotReady);
         } else {
-            self.write_or_buffer(buf).map_err(WriteError::from)
+            self.write_or_buf(buf).map_err(WriteError::from)
         }
     }
 
     fn is_ready_to_write(&self) -> bool;
-    fn write_or_buffer(&mut self, buf: &[u8]) -> io::Result<()>;
+
+    /// Empties any write buffers in a non-blocking way. If a non-blocking
+    /// operation is not possible, errors with [`io::ErrorKind::WouldBlock`]
+    /// kind of [`io::Error`].
+    ///
+    /// # Returns
+    ///
+    /// If the buffer contained any data before this operation.
+    fn empty_write_buf(&mut self) -> io::Result<bool>;
+    fn write_or_buf(&mut self, buf: &[u8]) -> io::Result<()>;
 }
