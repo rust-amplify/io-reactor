@@ -117,6 +117,14 @@ impl<S: Handler> Reactor<S> {
         Reactor::with(service, poller, thread::Builder::new())
     }
 
+    pub fn named<P: Poll>(service: S, poller: P, thread_name: String) -> Result<Self, io::Error>
+    where
+        S: 'static,
+        P: 'static,
+    {
+        Reactor::with(service, poller, thread::Builder::new().name(thread_name))
+    }
+
     pub fn with<P: Poll>(
         service: S,
         mut poller: P,
@@ -177,7 +185,7 @@ impl<S: Handler> Reactor<S> {
         self.controller.clone()
     }
 
-    pub fn join(self) -> std::thread::Result<()> {
+    pub fn join(self) -> thread::Result<()> {
         self.thread.join()
     }
 }
