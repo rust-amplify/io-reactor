@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::poller::{IoFail, IoType, Poll};
 
-/// Manager for a set of resources which are polled for an event loop by the
+/// Manager for a set of reactor which are polled for an event loop by the
 /// re-actor by using [`popol`] library.
 pub struct Poller {
     poll: popol::Poll<RawFd>,
@@ -49,7 +49,7 @@ impl Poll for Poller {
 
         #[cfg(feature = "log")]
         log::trace!(target: "popol",
-            "Polling {} resources with timeout {timeout:?} (pending event queue is {len})",
+            "Polling {} reactor with timeout {timeout:?} (pending event queue is {len})",
             self.poll.len(),
         );
 
