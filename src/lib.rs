@@ -1,6 +1,6 @@
-//! Poll reactor ([`Reactor`]) manages multiple resources of two main kinds:
+//! Poll reactor ([`Reactor`]) manages multiple reactor of two main kinds:
 //! listeners and sessions. It uses a dedicated thread blocked on I/O events
-//! from all of these resources (plus waker, plus timeouts) and than calls
+//! from all of these reactor (plus waker, plus timeouts) and than calls
 //! the resource to process the I/O and generate (none or multiple) resource-
 //! specific events.
 //!
@@ -9,7 +9,7 @@
 //!
 //! These events can be iterated by
 //!
-//! All resources under poll reactor must be representable as file descriptors.
+//! All reactor under poll reactor must be representable as file descriptors.
 
 #[macro_use]
 extern crate amplify;

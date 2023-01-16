@@ -44,7 +44,7 @@ pub enum Error<L: Resource, T: Resource> {
     /// poll on transport {0} has returned error.
     TransportPollError(T::Id, i16),
 
-    /// polling multiple resources has failed. Details: {0:?}
+    /// polling multiple reactor has failed. Details: {0:?}
     Poll(io::Error),
 }
 
