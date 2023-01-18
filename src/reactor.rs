@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::Write;
@@ -214,9 +215,26 @@ impl<C> Clone for Controller<C> {
 }
 
 impl<C> Controller<C> {
-    pub fn cmd(&self, command: C) -> Result<(), io::Error> {
+    pub fn cmd(&self, mut command: C) -> Result<(), io::Error>
+    where
+        C: 'static,
+    {
         #[cfg(feature = "log")]
-        log::debug!(target: "reactor-controller", "Sending command {command:?} to the reactor");
+        {
+            let cmd = Box::new(command);
+            let any = cmd as Box<dyn Any>;
+            let any = match any.downcast::<Box<dyn Debug>>() {
+                Err(any) => {
+                    log::debug!(target: "reactor-controller", "Sending command to the reactor");
+                    any
+                }
+                Ok(debug) => {
+                    log::debug!(target: "reactor-controller", "Sending command {debug:?} to the reactor");
+                    debug
+                }
+            };
+            command = *any.downcast().expect("from upcast");
+        }
 
         self.ctl_send
             .send(Ctl::Cmd(command))
