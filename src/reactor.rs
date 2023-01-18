@@ -103,46 +103,51 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     fn handover_transport(&mut self, transport: Self::Transport);
 }
 
-pub struct Reactor<S: Handler> {
+pub struct Reactor<C> {
     thread: JoinHandle<()>,
-    controller: Controller<S>,
+    controller: Controller<C>,
 }
 
-impl<S: Handler> Reactor<S> {
-    pub fn new<P: Poll>(service: S, poller: P) -> Result<Self, io::Error>
+impl<C> Reactor<C> {
+    pub fn new<P: Poll, H: Handler<Command = C>>(service: H, poller: P) -> Result<Self, io::Error>
     where
-        S: 'static,
+        H: 'static,
         P: 'static,
+        C: 'static + Send,
     {
         Reactor::with(service, poller, thread::Builder::new())
     }
 
-    pub fn named<P: Poll>(service: S, poller: P, thread_name: String) -> Result<Self, io::Error>
+    pub fn named<P: Poll, H: Handler<Command = C>>(
+        service: H,
+        poller: P,
+        thread_name: String,
+    ) -> Result<Self, io::Error>
     where
-        S: 'static,
+        H: 'static,
         P: 'static,
+        C: 'static + Send,
     {
         Reactor::with(service, poller, thread::Builder::new().name(thread_name))
     }
 
-    pub fn with<P: Poll>(
-        service: S,
+    pub fn with<P: Poll, H: Handler<Command = C>>(
+        service: H,
         mut poller: P,
         builder: thread::Builder,
     ) -> Result<Self, io::Error>
     where
-        S: 'static,
+        H: 'static,
         P: 'static,
+        C: 'static + Send,
     {
         let (ctl_send, ctl_recv) = chan::unbounded();
-        let (cmd_send, cmd_recv) = chan::unbounded();
 
         let (waker_writer, waker_reader) = UnixStream::pair()?;
         waker_reader.set_nonblocking(true)?;
         waker_writer.set_nonblocking(true)?;
 
         let controller = Controller {
-            cmd_send,
             ctl_send,
             waker: Arc::new(Mutex::new(waker_writer)),
         };
@@ -160,7 +165,6 @@ impl<S: Handler> Reactor<S> {
                 service,
                 poller,
                 controller: runtime_controller,
-                cmd_recv,
                 ctl_recv,
                 listeners: empty!(),
                 transports: empty!(),
@@ -181,7 +185,7 @@ impl<S: Handler> Reactor<S> {
         Ok(Self { thread, controller })
     }
 
-    pub fn controller(&self) -> Controller<S> {
+    pub fn controller(&self) -> Controller<C> {
         self.controller.clone()
     }
 
@@ -190,47 +194,32 @@ impl<S: Handler> Reactor<S> {
     }
 }
 
-enum Ctl<S: Handler> {
-    RegisterListener(S::Listener),
-    RegisterTransport(S::Transport),
+enum Ctl<C> {
+    Cmd(C),
     Shutdown,
 }
 
-pub struct Controller<S: Handler> {
-    // TODO: Unify command anc control channels
-    cmd_send: chan::Sender<S::Command>,
-    ctl_send: chan::Sender<Ctl<S>>,
+pub struct Controller<C> {
+    ctl_send: chan::Sender<Ctl<C>>,
     waker: Arc<Mutex<UnixStream>>,
 }
 
-impl<S: Handler> Clone for Controller<S> {
+impl<C> Clone for Controller<C> {
     fn clone(&self) -> Self {
         Controller {
-            cmd_send: self.cmd_send.clone(),
             ctl_send: self.ctl_send.clone(),
             waker: self.waker.clone(),
         }
     }
 }
 
-impl<S: Handler> Controller<S> {
-    pub fn register_listener(&self, listener: S::Listener) -> Result<(), io::Error> {
+impl<C> Controller<C> {
+    pub fn cmd(&self, command: C) -> Result<(), io::Error> {
         #[cfg(feature = "log")]
-        log::debug!(target: "reactor-controller", "Registering listener {}", listener.id());
+        log::debug!(target: "reactor-controller", "Sending command {command:?} to the reactor");
 
         self.ctl_send
-            .send(Ctl::RegisterListener(listener))
-            .map_err(|_| io::ErrorKind::BrokenPipe)?;
-        self.wake()?;
-        Ok(())
-    }
-
-    pub fn register_transport(&self, transport: S::Transport) -> Result<(), io::Error> {
-        #[cfg(feature = "log")]
-        log::debug!(target: "reactor-controller", "Registering transport {}", transport.id());
-
-        self.ctl_send
-            .send(Ctl::RegisterTransport(transport))
+            .send(Ctl::Cmd(command))
             .map_err(|_| io::ErrorKind::BrokenPipe)?;
         self.wake()?;
         Ok(())
@@ -243,17 +232,6 @@ impl<S: Handler> Controller<S> {
         let res1 = self.ctl_send.send(Ctl::Shutdown);
         let res2 = self.wake();
         res1.or(res2).map_err(|_| self)
-    }
-
-    pub fn send(&self, command: S::Command) -> Result<(), io::Error> {
-        #[cfg(feature = "log")]
-        log::debug!(target: "reactor-controller", "Sending command {command:?} to the reactor");
-
-        self.cmd_send
-            .send(command)
-            .map_err(|_| io::ErrorKind::BrokenPipe)?;
-        self.wake()?;
-        Ok(())
     }
 
     fn wake(&self) -> io::Result<()> {
@@ -324,9 +302,8 @@ fn reset_fd(fd: &impl AsRawFd) -> io::Result<()> {
 pub struct Runtime<H: Handler, P: Poll> {
     service: H,
     poller: P,
-    controller: Controller<H>,
-    cmd_recv: chan::Receiver<H::Command>,
-    ctl_recv: chan::Receiver<Ctl<H>>,
+    controller: Controller<H::Command>,
+    ctl_recv: chan::Receiver<Ctl<H::Command>>,
     listener_map: HashMap<RawFd, <H::Listener as Resource>::Id>,
     transport_map: HashMap<RawFd, <H::Transport as Resource>::Id>,
     listeners: HashMap<<H::Listener as Resource>::Id, H::Listener>,
@@ -338,14 +315,12 @@ pub struct Runtime<H: Handler, P: Poll> {
 impl<H: Handler, P: Poll> Runtime<H, P> {
     pub fn with(service: H, poller: P) -> io::Result<Self> {
         let (ctl_send, ctl_recv) = chan::unbounded();
-        let (cmd_send, cmd_recv) = chan::unbounded();
 
         let (waker_writer, waker_reader) = UnixStream::pair()?;
         waker_reader.set_nonblocking(true)?;
         waker_writer.set_nonblocking(true)?;
 
         let controller = Controller {
-            cmd_send,
             ctl_send,
             waker: Arc::new(Mutex::new(waker_writer)),
         };
@@ -354,7 +329,6 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             service,
             poller,
             controller,
-            cmd_recv,
             ctl_recv,
             listeners: empty!(),
             transports: empty!(),
@@ -365,7 +339,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         })
     }
 
-    pub fn controller(&self) -> Controller<H> {
+    pub fn controller(&self) -> Controller<H::Command> {
         self.controller.clone()
     }
 
@@ -415,27 +389,13 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             // Process the commands only if we awaken by the waker
             if awoken {
                 loop {
-                    match self.cmd_recv.try_recv() {
+                    match self.ctl_recv.try_recv() {
                         Err(chan::TryRecvError::Empty) => break,
                         Err(chan::TryRecvError::Disconnected) => {
                             panic!("control channel is broken")
                         }
-                        Ok(cmd) => self.service.handle_command(cmd),
-                    }
-                }
-                loop {
-                    match self.ctl_recv.try_recv() {
-                        Err(chan::TryRecvError::Empty) => break,
-                        Err(chan::TryRecvError::Disconnected) => {
-                            panic!("shutdown channel is broken")
-                        }
                         Ok(Ctl::Shutdown) => return self.handle_shutdown(),
-                        Ok(Ctl::RegisterListener(listener)) => self
-                            .handle_action(Action::RegisterListener(listener), now)
-                            .expect("register actions do not error"),
-                        Ok(Ctl::RegisterTransport(transport)) => self
-                            .handle_action(Action::RegisterTransport(transport), now)
-                            .expect("register actions do not error"),
+                        Ok(Ctl::Cmd(cmd)) => self.service.handle_command(cmd),
                     }
                 }
             }
@@ -454,8 +414,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         for (fd, res) in &mut self.poller {
             if fd == self.waker.as_raw_fd() {
                 if let Err(err) = res {
+                    #[cfg(feature = "log")]
                     log::error!(target: "reactor", "Polling waker has failed: {err}");
-                    panic!("waker failure");
+                    panic!("waker failure: {err}");
                 };
 
                 #[cfg(feature = "log")]
