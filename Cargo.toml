@@ -14,11 +14,10 @@ popol = { version = "1.0.0", git = "https://github.com/Cyphernet-WG/popol", bran
 polling = { version = "2.4.0", optional = true }
 epoll = { version = "4.3.1", optional = true }
 mio = { version = "0.8.5", optional = true }
-zmq = { version = "0.10.0", optional = true }
 socket2 = { version = "0.4.7", optional = true }
 log = { version = "0.4.17", optional = true, features = ["kv_unstable"] }
-libc = "0.2.71"
+libc = "0.2.139"
 
 [features]
 default = ["popol", "socket2"]
-all = ["popol", "polling", "epoll", "mio", "zmq", "socket2", "log"]
+all = ["popol", "polling", "epoll", "mio", "socket2", "log"]
