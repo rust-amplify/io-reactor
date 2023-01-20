@@ -1,8 +1,11 @@
 [package]
 name = "io-reactor"
 version = "0.1.0"
-description = "Rust implementation of reactor pattern for I/O resources"
-authors = ["Dr. Maxim Orlovsky <orlovsky@ubideco.org>"]
+description = "Concurrent I/O resource management using reactor pattern"
+authors = [
+    "Dr. Maxim Orlovsky <orlovsky@ubideco.org>",
+    "Alexis Sellier <alexis@cloudhead.io>"
+]
 keywords = ["reactor", "I/O", "patterns", "concurrency", "poll"]
 categories = ["concurrency", "asynchronous", "network-programming", "rust-patterns"]
 homepage = "https://github.com/rust-amplify"

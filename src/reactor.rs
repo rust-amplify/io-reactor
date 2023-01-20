@@ -1,3 +1,26 @@
+// Library for concurrent I/O resource management using reactor pattern.
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+// Written in 2021-2023 by
+//     Dr. Maxim Orlovsky <orlovsky@ubideco.org>
+//     Alexis Sellier <alexis@cloudhead.io>
+//
+// Copyright 2022-2023 UBIDECO Institute, Switzerland
+// Copyright 2021 Alexis Sellier <alexis@cloudhead.io>
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
@@ -236,9 +259,7 @@ impl<C> Controller<C> {
             command = *any.downcast().expect("from upcast");
         }
 
-        self.ctl_send
-            .send(Ctl::Cmd(command))
-            .map_err(|_| io::ErrorKind::BrokenPipe)?;
+        self.ctl_send.send(Ctl::Cmd(command)).map_err(|_| io::ErrorKind::BrokenPipe)?;
         self.wake()?;
         Ok(())
     }
@@ -296,11 +317,7 @@ fn reset_fd(fd: &impl AsRawFd) -> io::Result<()> {
         // We use a low-level "read" here because the alternative is to create a `UnixStream`
         // from the `RawFd`, which has "drop" semantics which we want to avoid.
         match unsafe {
-            libc::read(
-                fd.as_raw_fd(),
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-            )
+            libc::read(fd.as_raw_fd(), buf.as_mut_ptr() as *mut libc::c_void, buf.len())
         } {
             -1 => match io::Error::last_os_error() {
                 e if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
@@ -363,14 +380,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
     fn run(mut self) {
         loop {
-            let before_poll = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("system time");
-            let timeout = self
-                .timeouts
-                .next(before_poll)
-                .unwrap_or(WAIT_TIMEOUT)
-                .into();
+            let before_poll =
+                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("system time");
+            let timeout = self.timeouts.next(before_poll).unwrap_or(WAIT_TIMEOUT).into();
 
             for res in self.listeners.values() {
                 self.poller.set_interest(res, res.interests());
@@ -397,9 +409,8 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 }
             };
 
-            let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("system time");
+            let now =
+                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("system time");
             self.service.tick(now);
 
             let awoken = self.handle_events(now);
@@ -461,15 +472,13 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
                         let listener = self.listeners.remove(id).expect("resource disappeared");
                         unregister_queue.push(listener.as_raw_fd());
-                        self.service
-                            .handle_error(Error::ListenerDisconnect(*id, listener, flags));
+                        self.service.handle_error(Error::ListenerDisconnect(*id, listener, flags));
                     }
                     Err(IoFail::Os(flags)) => {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Listener {id} errored (OS flags {flags:#b})");
 
-                        self.service
-                            .handle_error(Error::ListenerPollError(*id, flags));
+                        self.service.handle_error(Error::ListenerPollError(*id, flags));
                     }
                 }
             } else if let Some(id) = self.transport_map.get(&fd) {
@@ -498,8 +507,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Transport {id} errored (OS flags {flags:#b})");
 
-                        self.service
-                            .handle_error(Error::TransportPollError(*id, flags));
+                        self.service.handle_error(Error::TransportPollError(*id, flags));
                     }
                 }
             } else {
@@ -561,10 +569,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 self.transport_map.insert(fd, id);
             }
             Action::UnregisterListener(id) => {
-                let listener = self
-                    .listeners
-                    .remove(&id)
-                    .ok_or(Error::ListenerUnknown(id))?;
+                let listener = self.listeners.remove(&id).ok_or(Error::ListenerUnknown(id))?;
                 let fd = listener.as_raw_fd();
 
                 #[cfg(feature = "log")]
@@ -577,10 +582,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 self.service.handover_listener(listener);
             }
             Action::UnregisterTransport(id) => {
-                let transport = self
-                    .transports
-                    .remove(&id)
-                    .ok_or(Error::TransportUnknown(id))?;
+                let transport = self.transports.remove(&id).ok_or(Error::TransportUnknown(id))?;
                 let fd = transport.as_raw_fd();
 
                 #[cfg(feature = "log")]
