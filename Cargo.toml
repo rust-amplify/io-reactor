@@ -6,7 +6,7 @@ authors = [
     "Dr. Maxim Orlovsky <orlovsky@ubideco.org>",
     "Alexis Sellier <alexis@cloudhead.io>"
 ]
-keywords = ["reactor", "I/O", "patterns", "concurrency", "poll"]
+keywords = ["reactor", "networking", "patterns", "concurrency", "poll"]
 categories = ["concurrency", "asynchronous", "network-programming", "rust-patterns"]
 homepage = "https://github.com/rust-amplify"
 repository = "https://github.com/rust-amplify/io-reactor"
