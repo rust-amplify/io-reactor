@@ -37,3 +37,7 @@ all = [
     "mio",
     "log"
 ]
+
+[package.metadata.docs.rs]
+all-features = true
+rustc-args = ["--cfg", "docsrs"]

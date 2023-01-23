@@ -21,6 +21,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+
 //! Poll reactor ([`Reactor`]) manages multiple reactor of two main kinds:
 //! listeners and sessions. It uses a dedicated thread blocked on I/O events
 //! from all of these reactor (plus waker, plus timeouts) and than calls
