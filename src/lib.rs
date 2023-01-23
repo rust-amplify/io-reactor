@@ -32,18 +32,41 @@
 )]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
-//! Poll reactor ([`Reactor`]) manages multiple reactor of two main kinds:
-//! listeners and sessions. It uses a dedicated thread blocked on I/O events
-//! from all of these reactor (plus waker, plus timeouts) and than calls
-//! the resource to process the I/O and generate (none or multiple) resource-
-//! specific events.
+//! ### _Concurrent I/O without rust async problems_
 //!
-//! Once a resource generates events, reactor calls the service (in the context
-//! of the runtime thread) to process each of the events.
+//! This repository provides a set of libraries for concurrent access to I/O resources (file,
+//! network, devices etc) which uses reactor pattern with pluggable `poll` syscall engines. This
+//! allows to handle situations like multiple network connections within the scope of a single
+//! thread (see [C10k problem]).
 //!
-//! These events can be iterated by
+//! The crate can be used for building concurrent microservice architectures without polling all
+//! APIs with `async`s.
 //!
-//! All reactor under poll reactor must be representable as file descriptors.
+//! The reactor design pattern is an event handling pattern for handling service requests delivered
+//! concurrently to a service handler by one or more inputs. The service handler then demultiplexes
+//! the incoming requests and dispatches them synchronously to the associated request handlers[^1].
+//!
+//! Core concepts:
+//! - **[`Resource`]**: any resource that can provide input to or consume output from the system.
+//! - **[`Runtime`]**: runs an event loop to block on all resources. Sends the resource service when
+//!   it is possible to start a synchronous operation on a resource without blocking (Example: a
+//!   synchronous call to read() will block if there is no data to read.
+//! - **Service**: custom business logic provided by the application for a given set of resources.
+//!   Service exposes a **[`Handler`] API** for the reactor [`Runtime`]. It is also responsible for
+//!   the creation and destruction of the resources.
+//!
+//! [`Reactor`] exposes a high-level API and manages multiple resources of two main kinds listeners
+//! and sessions. It uses a dedicated thread blocked on I/O events from all of these resources and
+//! than calls the [`Resource::handle_io`] to process the I/O and generate resource-specific event.
+//!
+//! Once a resource generates an event, reactor calls [`Handler`] API (in the context of the runtime
+//! thread) to process each of the events.
+//!
+//! All resources under poll reactor must be representable as file descriptors.
+//!
+//! [C10k problem]: https://en.wikipedia.org/wiki/C10k_problem
+//! [^1]: Schmidt, Douglas et al. Pattern-Oriented Software Architecture Volume 2: Patterns for
+//!       Concurrent and Networked Objects. Volume 2. Wiley, 2000.
 
 #[macro_use]
 extern crate amplify;
