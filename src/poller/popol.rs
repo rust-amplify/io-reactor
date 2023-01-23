@@ -31,15 +31,22 @@ use crate::poller::{IoFail, IoType, Poll};
 /// Manager for a set of reactor which are polled for an event loop by the
 /// re-actor by using [`popol`] library.
 pub struct Poller {
-    poll: popol::Poll<RawFd>,
-    events: VecDeque<(RawFd, Result<IoType, IoFail>)>,
+    poll: popol::Sources<RawFd>,
+    events: VecDeque<popol::Event<RawFd>>,
 }
 
 impl Poller {
     pub fn new() -> Self {
         Self {
-            poll: popol::Poll::new(),
+            poll: popol::Sources::new(),
             events: empty!(),
+        }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            poll: popol::Sources::with_capacity(capacity),
+            events: VecDeque::with_capacity(capacity),
         }
     }
 }
@@ -68,41 +75,30 @@ impl Poll for Poller {
     }
 
     fn poll(&mut self, timeout: Option<Duration>) -> io::Result<usize> {
-        let len = self.events.len();
-
         #[cfg(feature = "log")]
         log::trace!(target: "popol",
-            "Polling {} reactor with timeout {timeout:?} (pending event queue is {len})",
-            self.poll.len(),
+            "Polling {} reactor resources with timeout {timeout:?} (pending event queue is {})",
+            self.poll.len(), self.events.len()
         );
 
         // Blocking call
-        if self.poll.wait_timeout(timeout.into())? {
-            #[cfg(feature = "log")]
-            log::trace!(target: "popol", "Poll timed out with zero events generated");
-            return Ok(0);
+        match self.poll.poll(&mut self.events, timeout) {
+            Ok(count) => {
+                #[cfg(feature = "log")]
+                log::trace!(target: "popol", "Poll resulted in {} new event(s)", count);
+                Ok(count)
+            }
+            Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                #[cfg(feature = "log")]
+                log::trace!(target: "popol", "Poll timed out with zero events generated");
+                Ok(0)
+            }
+            Err(err) => {
+                #[cfg(feature = "log")]
+                log::trace!(target: "popol", "Poll resulted in error: {err}");
+                Err(err)
+            }
         }
-
-        for (fd, fired) in self.poll.events() {
-            let res = if fired.has_hangup() {
-                Err(IoFail::Connectivity(fired.fired_events()))
-            } else if fired.is_err() {
-                Err(IoFail::Os(fired.fired_events()))
-            } else {
-                Ok(IoType {
-                    read: fired.is_readable(),
-                    write: fired.is_writable(),
-                })
-            };
-            #[cfg(feature = "log")]
-            log::trace!(target: "popol", "Got `{res:?}` for {fd}");
-            self.events.push_back((*fd, res))
-        }
-
-        #[cfg(feature = "log")]
-        log::trace!(target: "popol", "Poll resulted in {} new event(s)", self.events.len() - len);
-
-        Ok(self.events.len() - len)
     }
 }
 
@@ -110,34 +106,43 @@ impl Iterator for Poller {
     type Item = (RawFd, Result<IoType, IoFail>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.events.pop_front() {
-            Some((fd, Ok(io))) => {
-                #[cfg(feature = "log")]
-                log::trace!(target: "popol", "Popped event `{io}` for {fd} from the queue");
-                Some((fd, Ok(io)))
-            }
-            Some((fd, Err(err))) => {
-                #[cfg(feature = "log")]
-                log::trace!(target: "popol", "Popped error `{err}` for {fd} from the queue");
-                Some((fd, Err(err)))
-            }
-            None => {
-                #[cfg(feature = "log")]
-                log::trace!(target: "popol", "Popol queue emptied");
-                None
-            }
-        }
+        let event = self.events.pop_front()?;
+
+        let fd = event.key;
+        let fired = event.raw_events();
+        let res = if event.is_hangup() {
+            #[cfg(feature = "log")]
+            log::trace!(target: "popol", "Hangup on {fd}");
+
+            Err(IoFail::Connectivity(fired))
+        } else if event.is_error() || event.is_invalid() {
+            #[cfg(feature = "log")]
+            log::trace!(target: "popol", "OS error on {fd} (fired events {fired:#b})");
+
+            Err(IoFail::Os(fired))
+        } else {
+            let io = IoType {
+                read: event.is_readable(),
+                write: event.is_writable(),
+            };
+
+            #[cfg(feature = "log")]
+            log::trace!(target: "popol", "I/O event on {fd}: {io}");
+
+            Ok(io)
+        };
+        Some((fd, res))
     }
 }
 
-impl From<IoType> for popol::PollEvents {
+impl From<IoType> for popol::Interest {
     fn from(ev: IoType) -> Self {
-        let mut e = popol::event::NONE;
+        let mut e = popol::interest::NONE;
         if ev.read {
-            e |= popol::event::READ;
+            e |= popol::interest::READ;
         }
         if ev.write {
-            e |= popol::event::WRITE;
+            e |= popol::interest::WRITE;
         }
         e
     }

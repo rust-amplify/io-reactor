@@ -182,8 +182,9 @@ dependencies = [
 
 [[package]]
 name = "popol"
-version = "1.0.0"
-source = "git+https://github.com/Cyphernet-WG/popol?branch=api#0b78f5ef1c39741cfc67157b7d2c7a27064150b1"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "839bf4ab18d0c74859e01a22365a5c573e7b3f0ff36a11c4250f1e5bd220f397"
 dependencies = [
  "libc",
 ]
