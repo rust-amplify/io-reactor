@@ -45,8 +45,6 @@ pub trait Resource: AsRawFd + WriteAtomic + Send {
     fn interests(&self) -> IoType;
 
     fn handle_io(&mut self, io: Io) -> Option<Self::Event>;
-
-    fn disconnect(self) -> io::Result<()>;
 }
 
 impl ResourceId for net::SocketAddr {}
