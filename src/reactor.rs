@@ -38,9 +38,10 @@ use crate::poller::{IoFail, IoType, Poll};
 use crate::resource::WriteError;
 use crate::{Resource, TimeoutManager, WriteAtomic};
 
-/// Maximum amount of time to wait for i/o.
+/// Maximum amount of time to wait for I/O.
 const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
+/// Reactor errors
 #[derive(Error, Display, From)]
 #[display(doc_comments)]
 pub enum Error<L: Resource, T: Resource> {
@@ -76,31 +77,91 @@ impl<L: Resource, T: Resource> Debug for Error<L, T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { Display::fmt(self, f) }
 }
 
+/// Actions which can be provided to the reactor by the [`Handler`].
+///
+/// Reactor reads actions on each event loop using [`Handler`] iterator interface.
 #[derive(Display)]
 pub enum Action<L: Resource, T: Resource> {
+    /// Register a new listener resource for the reactor poll.
+    ///
+    /// Reactor can't instantiate the resource, like bind a network listener.
+    /// Reactor only can register already active resource for polling in the event loop.
     #[display("register_listener")]
     RegisterListener(L),
+
+    /// Register a new transport resource for the reactor poll.
+    ///
+    /// Reactor can't instantiate the resource, like open a file or establish network connection.
+    /// Reactor only can register already active resource for polling in the event loop.
     #[display("register_transport")]
     RegisterTransport(T),
+
+    /// Unregister listener resource from the reactor poll and handover it to the [`Handler`] via
+    /// [`Handler::handover_listener`].
+    ///
+    /// When the resource is unregistered no action is performed, i.e. the file descriptor is not
+    /// closed, listener is not unbound, connections are not closed etc. All these actions must be
+    /// handled by the handler upon the handover event.
     #[display("unregister_listener")]
     UnregisterListener(L::Id),
+
+    /// Unregister transport resource from the reactor poll and handover it to the [`Handler`] via
+    /// [`Handler::handover_transport`].
+    ///
+    /// When the resource is unregistered no action is performed, i.e. the file descriptor is not
+    /// closed, listener is not unbound, connections are not closed etc. All these actions must be
+    /// handled by the handler upon the handover event.
     #[display("unregister_transport")]
     UnregisterTransport(T::Id),
+
+    /// Write the data to one of the transport resources using [`io::Write`].
     #[display("send_to({0})")]
     Send(T::Id, Vec<u8>),
+
+    /// Set a new timer for a given duration from this moment.
+    ///
+    /// When the timer fires reactor will timeout poll syscall and call [`Handler::handle_wakeup`].
     #[display("set_timer({0:?})")]
     SetTimer(Duration),
 }
 
+/// A service which handles I/O events generated in the [`Reactor`].
 pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport>> {
+    /// Type for a listener resource.
+    ///
+    /// Listener resources are resources which may spawn more resources and can't be written to. A
+    /// typical example of a listener resource is a [`std::net::TcpListener`], however this may also
+    /// be a special form of a peripheral device or something else.
     type Listener: Resource;
+
+    /// Type for a transport resource.
+    ///
+    /// Transport is a "full" resource which can be read from - and written to. Usual files, network
+    /// connections, database connections etc are all fall into this category.
     type Transport: Resource;
+
+    /// A command which may be sent to the [`Handler`] from outside of the [`Reactor`], including
+    /// other threads.
+    ///
+    /// The handler object is owned by the reactor runtime and executes always in the context of the
+    /// reactor runtime thread. Thus, if other (micro)services within the app needs to communicate
+    /// to the handler they have to use this data type, which usually is an enumeration for a set of
+    /// commands supported by the handler.
+    ///
+    /// The commands are sent by using reactor [`Controller`] API.
     type Command: Debug + Send;
 
+    /// Method called by the reactor on the start of each event loop once the poll has returned.
     fn tick(&mut self, time: Duration);
 
+    /// Method called by the reactor when a previously set timeout is fired.
+    // TODO #11: Method is never called
     fn handle_wakeup(&mut self);
 
+    /// Method called by the reactor upon an I/O event on a listener resource.
+    ///
+    /// Since listener doesn't support writing, it can be only a read event (indicating that a new
+    /// resource can be spawned from the listener).
     fn handle_listener_event(
         &mut self,
         id: <Self::Listener as Resource>::Id,
@@ -108,6 +169,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
         time: Duration,
     );
 
+    /// Method called by the reactor upon I/O event on a transport resource.
     fn handle_transport_event(
         &mut self,
         id: <Self::Transport as Resource>::Id,
@@ -115,22 +177,53 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
         time: Duration,
     );
 
+    /// Method called by the reactor when a [`Self::Command`] is received for the [`Handler`].
+    ///
+    /// The commands are sent via [`Controller`] from outside of the reactor, including other
+    /// threads.
     fn handle_command(&mut self, cmd: Self::Command);
 
+    /// Method called by the reactor on any kind of error during the event loop, including errors of
+    /// the poll syscall or I/O errors returned as a part of the poll result events.
+    ///
+    /// See [`enum@Error`] for the details on errors which may happen.
     fn handle_error(&mut self, err: Error<Self::Listener, Self::Transport>);
 
-    /// Called by the reactor upon receiving [`Action::UnregisterListener`]
+    /// Method called by the reactor upon receiving [`Action::UnregisterListener`].
+    ///
+    /// Passes the listener resource to the [`Handler`] when it is already not a part of the reactor
+    /// poll. From this point of time it is safe to send the resource to other threads (like
+    /// workers) or close the resource.
     fn handover_listener(&mut self, listener: Self::Listener);
-    /// Called by the reactor upon receiving [`Action::UnregisterTransport`]
+
+    /// Method called by the reactor upon receiving [`Action::UnregisterTransport`].
+    ///
+    /// Passes the transport resource to the [`Handler`] when it is already not a part of the
+    /// reactor poll. From this point of time it is safe to send the resource to other threads
+    /// (like workers) or close the resource.
     fn handover_transport(&mut self, transport: Self::Transport);
 }
 
+/// High-level reactor API wrapping reactor [`Runtime`] into a thread and providing basic thread
+/// management for it.
+///
+/// Apps running the [`Reactor`] can interface it and a [`Handler`] via use of the [`Controller`]
+/// API.
 pub struct Reactor<C> {
     thread: JoinHandle<()>,
     controller: Controller<C>,
 }
 
 impl<C> Reactor<C> {
+    /// Creates new reactor using provided [`Poll`] engine and a service exposing [`Handler`] API to
+    /// the reactor.
+    ///
+    /// Both poll engine and the service are sent to the newly created reactor thread which runs the
+    /// reactor [`Runtime`].
+    ///
+    /// # Error
+    ///
+    /// Errors with a system/OS error if it was impossible to spawn a thread.
     pub fn new<P: Poll, H: Handler<Command = C>>(service: H, poller: P) -> Result<Self, io::Error>
     where
         H: 'static,
@@ -140,6 +233,16 @@ impl<C> Reactor<C> {
         Reactor::with(service, poller, thread::Builder::new())
     }
 
+    /// Creates new reactor using provided [`Poll`] engine and a service exposing [`Handler`] API to
+    /// the reactor.
+    ///
+    /// Similar to the [`Reactor::new`], but allows to specify the name for the reactor thread.
+    /// Both poll engine and the service are sent to the newly created reactor thread which runs the
+    /// reactor [`Runtime`].
+    ///
+    /// # Error
+    ///
+    /// Errors with a system/OS error if it was impossible to spawn a thread.
     pub fn named<P: Poll, H: Handler<Command = C>>(
         service: H,
         poller: P,
@@ -153,6 +256,16 @@ impl<C> Reactor<C> {
         Reactor::with(service, poller, thread::Builder::new().name(thread_name))
     }
 
+    /// Creates new reactor using provided [`Poll`] engine and a service exposing [`Handler`] API to
+    /// the reactor.
+    ///
+    /// Similar to the [`Reactor::new`], but allows to fully customize how the reactor thread is
+    /// constructed. Both poll engine and the service are sent to the newly created reactor
+    /// thread which runs the reactor [`Runtime`].
+    ///
+    /// # Error
+    ///
+    /// Errors with a system/OS error if it was impossible to spawn a thread.
     pub fn with<P: Poll, H: Handler<Command = C>>(
         service: H,
         mut poller: P,
@@ -207,8 +320,13 @@ impl<C> Reactor<C> {
         Ok(Self { thread, controller })
     }
 
+    /// Provides a copy of a [`Controller`] object which exposes an API to the reactor and a service
+    /// running inside of its thread.
+    ///
+    /// See [`Handler::Command`] for the details.
     pub fn controller(&self) -> Controller<C> { self.controller.clone() }
 
+    /// Joins the reactor thread.
     pub fn join(self) -> thread::Result<()> { self.thread.join() }
 }
 
@@ -217,6 +335,12 @@ enum Ctl<C> {
     Shutdown,
 }
 
+/// Control API to the service which is run inside a reactor.
+///
+/// The service is passed to the [`Reactor`] constructor as a parameter and also exposes [`Handler`]
+/// API to the reactor itself for receiving reactor-generated events. This API is used by the
+/// reactor to inform the service about incoming commands, sent via this [`Controller`] API (see
+/// [`Handler::Command`] for the details).
 pub struct Controller<C> {
     ctl_send: chan::Sender<Ctl<C>>,
     waker: Arc<Mutex<UnixStream>>,
@@ -232,6 +356,7 @@ impl<C> Clone for Controller<C> {
 }
 
 impl<C> Controller<C> {
+    /// Send a command to the service inside a [`Reactor`] or a reactor [`Runtime`].
     pub fn cmd(&self, mut command: C) -> Result<(), io::Error>
     where C: 'static {
         #[cfg(feature = "log")]
@@ -256,6 +381,7 @@ impl<C> Controller<C> {
         Ok(())
     }
 
+    /// Shutdown the reactor.
     pub fn shutdown(self) -> Result<(), Self> {
         #[cfg(feature = "log")]
         log::info!(target: "reactor-controller", "Initiating reactor shutdown...");
@@ -326,6 +452,13 @@ fn reset_fd(fd: &impl AsRawFd) -> io::Result<()> {
     }
 }
 
+/// Internal [`Reactor`] runtime which is run in a dedicated thread.
+///
+/// Use this structure direactly only if you'd like to have the full control over the reactor
+/// thread.
+///
+/// This runtime structure **does not** spawns a thread and is **blocking**. It implements the
+/// actual reactor event loop.
 pub struct Runtime<H: Handler, P: Poll> {
     service: H,
     poller: P,
@@ -340,6 +473,8 @@ pub struct Runtime<H: Handler, P: Poll> {
 }
 
 impl<H: Handler, P: Poll> Runtime<H, P> {
+    /// Creates new reactor runtime using provided [`Poll`] engine and a service exposing
+    /// [`Handler`] API to the reactor.
     pub fn with(service: H, poller: P) -> io::Result<Self> {
         let (ctl_send, ctl_recv) = chan::unbounded();
 
@@ -366,6 +501,10 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         })
     }
 
+    /// Provides a copy of a [`Controller`] object which exposes an API to the reactor and a service
+    /// running inside of its thread.
+    ///
+    /// See [`Handler::Command`] for the details.
     pub fn controller(&self) -> Controller<H::Command> { self.controller.clone() }
 
     fn run(mut self) {

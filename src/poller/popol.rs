@@ -21,6 +21,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Poll engine provided by the [`popol`] crate.
+
 use std::collections::VecDeque;
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -40,6 +42,7 @@ impl Default for Poller {
 }
 
 impl Poller {
+    /// Constructs new [`popol`]-backed poll engine.
     pub fn new() -> Self {
         Self {
             poll: popol::Sources::new(),
@@ -47,6 +50,8 @@ impl Poller {
         }
     }
 
+    /// Constructs new [`popol`]-backed poll engine and reserves certain capacity for the resources
+    /// which later will be registered for a poll operation.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             poll: popol::Sources::with_capacity(capacity),

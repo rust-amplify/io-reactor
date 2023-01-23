@@ -29,27 +29,41 @@ use std::{io, net};
 
 use crate::poller::IoType;
 
+/// I/O events which can be subscribed for - or notified about by the [`crate::Reactor`] on a
+/// specific [`Resource`].
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Io {
+    /// Input event
     Read,
+    /// Output event
     Write,
 }
 
+/// Marker traits for types which can be used as a reactor-managed [`Resource`] identifiers.
 pub trait ResourceId: Copy + Eq + Ord + Hash + Send + Debug + Display {}
 
+/// A resource which can be managed by the reactor.
 pub trait Resource: AsRawFd + WriteAtomic + Send {
+    /// Resource identifier type.
     type Id: ResourceId;
+    /// Events which resource may generate upon receiving I/O from the reactor via
+    /// [`Self::handle_io`]. These events are passed to the reactor [`crate::Handler`].
     type Event;
 
+    /// Method returning the [`ResourceId`].
     fn id(&self) -> Self::Id;
+    /// Method informing the reactor which types of events this resource is subscribed for.
     fn interests(&self) -> IoType;
 
+    /// Method called by the reactor when an I/O event is received for this resource in a result of
+    /// poll syscall.
     fn handle_io(&mut self, io: Io) -> Option<Self::Event>;
 }
 
 impl ResourceId for net::SocketAddr {}
 impl ResourceId for RawFd {}
 
+/// Error during write operation for a reactor-managed [`Resource`].
 #[derive(Debug, Display, Error, From)]
 pub enum WriteError {
     /// Underlying resource is not ready to accept the data: for instance,
@@ -72,6 +86,8 @@ pub enum WriteError {
 /// also guarantee that multiple attempts to do the write would not result in
 /// data to be written out of the initial ordering.
 pub trait WriteAtomic: io::Write {
+    /// Atomic non-blocking I/O write operation, which must either write the whole buffer to a
+    /// resource without blocking - or fail with [`WriteError::NotReady`] error.
     fn write_atomic(&mut self, buf: &[u8]) -> Result<(), WriteError> {
         if !self.is_ready_to_write() {
             Err(WriteError::NotReady)
@@ -80,6 +96,7 @@ pub trait WriteAtomic: io::Write {
         }
     }
 
+    /// Checks whether resource can be written to without blocking.
     fn is_ready_to_write(&self) -> bool;
 
     /// Empties any write buffers in a non-blocking way. If a non-blocking
@@ -90,5 +107,11 @@ pub trait WriteAtomic: io::Write {
     ///
     /// If the buffer contained any data before this operation.
     fn empty_write_buf(&mut self) -> io::Result<bool>;
+
+    #[doc = hidden]
+    /// Writes to the resource in a non-blocking way, buffering the data if necessary - or failing
+    /// with a system-level error.
+    ///
+    /// This method shouldn't be called directly; [`Self::write_atomic`] must be used instead.
     fn write_or_buf(&mut self, buf: &[u8]) -> io::Result<()>;
 }

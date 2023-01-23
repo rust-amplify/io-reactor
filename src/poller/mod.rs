@@ -21,6 +21,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! OS and implementation-specific poll engines.
+
 #[cfg(feature = "popol")]
 pub mod popol;
 
@@ -31,7 +33,7 @@ use std::{io, ops};
 
 use crate::resource::Io;
 
-/// Information about I/O events which has happened for an actor
+/// Information about I/O events which has happened for a resource.
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
 pub struct IoType {
     /// Specifies whether I/O source has data to read.
@@ -41,6 +43,7 @@ pub struct IoType {
 }
 
 impl IoType {
+    /// Indicates no I/O operations are tracked.
     pub fn none() -> Self {
         Self {
             read: false,
@@ -48,6 +51,7 @@ impl IoType {
         }
     }
 
+    /// Indicates interest in only read I/O events.
     pub fn read_only() -> Self {
         Self {
             read: true,
@@ -55,6 +59,7 @@ impl IoType {
         }
     }
 
+    /// Indicates interest in only write I/O events.
     pub fn write_only() -> Self {
         Self {
             read: false,
@@ -62,6 +67,7 @@ impl IoType {
         }
     }
 
+    /// Indicates interest in both read and write I/O events.
     pub fn read_write() -> Self {
         Self {
             read: true,
@@ -69,9 +75,13 @@ impl IoType {
         }
     }
 
+    /// Indicates no I/O operations has happened on a resource.
     pub fn is_none(self) -> bool { !self.read && !self.write }
+    /// Indicates data available to be read from a resource.
     pub fn is_read_only(self) -> bool { self.read && !self.write }
+    /// Indicates that the resource is ready to accept data.
     pub fn is_write_only(self) -> bool { !self.read && self.write }
+    /// Indicates that the resource can accept data - and has aa data which can be read.
     pub fn is_read_write(self) -> bool { self.read && self.write }
 }
 
@@ -118,6 +128,7 @@ impl Display for IoType {
     }
 }
 
+/// Reasons for the poll operation failure for a specific resource.
 #[derive(Copy, Clone, Debug, Display, Error)]
 #[display(doc_comments)]
 pub enum IoFail {
@@ -127,14 +138,30 @@ pub enum IoFail {
     Os(i16),
 }
 
+/// An engine providing `poll` syscall interface to the [`crate::Reactor`].
+///
+/// Since `poll` syscalls are platform-dependent and multiple crates can expose it with a different
+/// API and tradeoffs, the current library allows selection of a specific poll engine
+/// implementation.
+///
+/// To read I/O events from the engine please use its Iterator interface.
 pub trait Poll
 where
     Self: Send + Iterator<Item = (RawFd, Result<IoType, IoFail>)>,
     for<'a> &'a mut Self: Iterator<Item = (RawFd, Result<IoType, IoFail>)>,
 {
+    /// Registers a file-descriptor based resource for a poll.
     fn register(&mut self, fd: &impl AsRawFd, interest: IoType);
+    /// Unregisters a file-descriptor based resource from a poll.
     fn unregister(&mut self, fd: &impl AsRawFd);
+    /// Subscribes for a specific set of events for a given file descriptor-backed resource (see
+    /// [`IoType`] for the details on event subscription).
     fn set_interest(&mut self, fd: &impl AsRawFd, interest: IoType) -> bool;
 
+    /// Runs single poll syscall over all registered resources with an optional timeout.
+    ///
+    /// # Returns
+    ///
+    /// Number of generated events.
     fn poll(&mut self, timeout: Option<Duration>) -> io::Result<usize>;
 }
