@@ -73,9 +73,7 @@ pub enum Error<L: Resource, T: Resource> {
 }
 
 impl<L: Resource, T: Resource> Debug for Error<L, T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(self, f)
-    }
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { Display::fmt(self, f) }
 }
 
 #[derive(Display)]
@@ -209,13 +207,9 @@ impl<C> Reactor<C> {
         Ok(Self { thread, controller })
     }
 
-    pub fn controller(&self) -> Controller<C> {
-        self.controller.clone()
-    }
+    pub fn controller(&self) -> Controller<C> { self.controller.clone() }
 
-    pub fn join(self) -> thread::Result<()> {
-        self.thread.join()
-    }
+    pub fn join(self) -> thread::Result<()> { self.thread.join() }
 }
 
 enum Ctl<C> {
@@ -239,9 +233,7 @@ impl<C> Clone for Controller<C> {
 
 impl<C> Controller<C> {
     pub fn cmd(&self, mut command: C) -> Result<(), io::Error>
-    where
-        C: 'static,
-    {
+    where C: 'static {
         #[cfg(feature = "log")]
         {
             let cmd = Box::new(command);
@@ -374,9 +366,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         })
     }
 
-    pub fn controller(&self) -> Controller<H::Command> {
-        self.controller.clone()
-    }
+    pub fn controller(&self) -> Controller<H::Command> { self.controller.clone() }
 
     fn run(mut self) {
         loop {

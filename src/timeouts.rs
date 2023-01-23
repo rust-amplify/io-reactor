@@ -45,20 +45,17 @@ impl<K> TimeoutManager<K> {
     }
 
     /// Return the number of timeouts being tracked.
-    pub fn len(&self) -> usize {
-        self.timeouts.len()
-    }
+    pub fn len(&self) -> usize { self.timeouts.len() }
 
     /// Check whether there are timeouts being tracked.
-    pub fn is_empty(&self) -> bool {
-        self.timeouts.is_empty()
-    }
+    pub fn is_empty(&self) -> bool { self.timeouts.is_empty() }
 
     /// Register a new timeout with an associated key and wake-up time from a
     /// UNIX time epoch.
     ///
     /// ```
-    /// use std::time::{Duration};
+    /// use std::time::Duration;
+    ///
     /// use reactor::TimeoutManager;
     ///
     /// let mut tm = TimeoutManager::new(Duration::from_secs(1));
@@ -145,7 +142,8 @@ impl<K> TimeoutManager<K> {
     /// have timed out. Returns the number of keys that timed out.
     ///
     /// ```
-    /// use std::time::{Duration};
+    /// use std::time::Duration;
+    ///
     /// use reactor::TimeoutManager;
     ///
     /// let mut tm = TimeoutManager::new(Duration::from_secs(0));

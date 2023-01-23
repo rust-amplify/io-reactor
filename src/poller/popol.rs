@@ -36,9 +36,7 @@ pub struct Poller {
 }
 
 impl Default for Poller {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Poller {

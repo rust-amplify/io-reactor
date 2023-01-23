@@ -68,18 +68,10 @@ impl IoType {
         }
     }
 
-    pub fn is_none(self) -> bool {
-        !self.read && !self.write
-    }
-    pub fn is_read_only(self) -> bool {
-        self.read && !self.write
-    }
-    pub fn is_write_only(self) -> bool {
-        !self.read && self.write
-    }
-    pub fn is_read_write(self) -> bool {
-        self.read && self.write
-    }
+    pub fn is_none(self) -> bool { !self.read && !self.write }
+    pub fn is_read_only(self) -> bool { self.read && !self.write }
+    pub fn is_write_only(self) -> bool { !self.read && self.write }
+    pub fn is_read_write(self) -> bool { self.read && self.write }
 }
 
 impl ops::Not for IoType {
