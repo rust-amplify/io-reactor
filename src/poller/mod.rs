@@ -69,16 +69,16 @@ impl IoType {
     }
 
     pub fn is_none(self) -> bool {
-        self.read == false && self.write == false
+        !self.read && !self.write
     }
     pub fn is_read_only(self) -> bool {
-        self.read == true && self.write == false
+        self.read && !self.write
     }
     pub fn is_write_only(self) -> bool {
-        self.read == false && self.write == true
+        !self.read && self.write
     }
     pub fn is_read_write(self) -> bool {
-        self.read == true && self.write == true
+        self.read && self.write
     }
 }
 

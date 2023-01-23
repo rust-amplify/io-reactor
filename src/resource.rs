@@ -76,7 +76,7 @@ pub enum WriteError {
 pub trait WriteAtomic: io::Write {
     fn write_atomic(&mut self, buf: &[u8]) -> Result<(), WriteError> {
         if !self.is_ready_to_write() {
-            return Err(WriteError::NotReady);
+            Err(WriteError::NotReady)
         } else {
             self.write_or_buf(buf).map_err(WriteError::from)
         }

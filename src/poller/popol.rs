@@ -35,6 +35,12 @@ pub struct Poller {
     events: VecDeque<popol::Event<RawFd>>,
 }
 
+impl Default for Poller {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Poller {
     pub fn new() -> Self {
         Self {

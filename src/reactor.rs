@@ -382,7 +382,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         loop {
             let before_poll =
                 SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("system time");
-            let timeout = self.timeouts.next(before_poll).unwrap_or(WAIT_TIMEOUT).into();
+            let timeout = self.timeouts.next(before_poll).unwrap_or(WAIT_TIMEOUT);
 
             for res in self.listeners.values() {
                 self.poller.set_interest(res, res.interests());
