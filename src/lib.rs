@@ -21,6 +21,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![deny(
+    non_upper_case_globals,
+    non_camel_case_types,
+    non_snake_case,
+    unused_mut,
+    unused_imports,
+    dead_code,
+    //missing_docs
+)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 //! Poll reactor ([`Reactor`]) manages multiple reactor of two main kinds:
