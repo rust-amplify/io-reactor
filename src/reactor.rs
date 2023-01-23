@@ -120,7 +120,7 @@ pub enum Action<L: Resource, T: Resource> {
 
     /// Set a new timer for a given duration from this moment.
     ///
-    /// When the timer fires reactor will timeout poll syscall and call [`Handler::handle_wakeup`].
+    /// When the timer fires reactor will timeout poll syscall and call [`Handler::handle_timer`].
     #[display("set_timer({0:?})")]
     SetTimer(Duration),
 }
@@ -155,8 +155,9 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     fn tick(&mut self, time: Duration);
 
     /// Method called by the reactor when a previously set timeout is fired.
-    // TODO #11: Method is never called
-    fn handle_wakeup(&mut self);
+    ///
+    /// Related: [`Action::SetTimer`].
+    fn handle_timer(&mut self);
 
     /// Method called by the reactor upon an I/O event on a listener resource.
     ///
@@ -508,6 +509,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     pub fn controller(&self) -> Controller<H::Command> { self.controller.clone() }
 
     fn run(mut self) {
+        // We just do not want to re-allocate it on each loop.
+        let mut fired_timers = Vec::with_capacity(32);
+
         loop {
             let before_poll =
                 SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("system time");
@@ -525,8 +529,20 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             log::trace!(target: "reactor", "Polling with timeout {timeout:?}");
             match self.poller.poll(Some(timeout)) {
                 Ok(0) => {
-                    #[cfg(feature = "log")]
-                    log::trace!(target: "reactor", "Timeout");
+                    // Nb. The way this is currently used basically ignores which keys have
+                    // timed out. So as long as *something* timed out, we wake the service.
+                    self.timeouts.check_now(&mut fired_timers);
+                    if !fired_timers.is_empty() {
+                        #[cfg(feature = "log")]
+                        log::trace!(target: "reactor", "Timer(s) has fired ({} in total)", fired_timers.len());
+
+                        fired_timers.clear();
+                        self.service.handle_timer();
+                    } else {
+                        #[cfg(feature = "log")]
+                        log::trace!(target: "reactor", "Poll timeout; no I/O events had happened");
+                    }
+
                     continue;
                 }
                 Ok(count) => count,
