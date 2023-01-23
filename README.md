@@ -10,7 +10,7 @@
 [![Apache-2 licensed](https://img.shields.io/crates/l/io-reactor)](./LICENSE)
 
 This repository provides a set of libraries for concurrent access to I/O
-resources (file, network, devices etC) which uses reactor patter with different
+resources (file, network, devices etc) which uses reactor patter with different
 `poll` syscall providers.
 
 
