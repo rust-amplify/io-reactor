@@ -21,7 +21,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::Write;
@@ -358,10 +357,13 @@ impl<C> Clone for Controller<C> {
 
 impl<C> Controller<C> {
     /// Send a command to the service inside a [`Reactor`] or a reactor [`Runtime`].
+    #[allow(unused_mut)] // because of the `log` feature gate
     pub fn cmd(&self, mut command: C) -> Result<(), io::Error>
     where C: 'static {
         #[cfg(feature = "log")]
         {
+            use std::any::Any;
+
             let cmd = Box::new(command);
             let any = cmd as Box<dyn Any>;
             let any = match any.downcast::<Box<dyn Debug>>() {
