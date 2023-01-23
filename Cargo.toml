@@ -23,11 +23,17 @@ amplify = "4.0.0-beta.1"
 crossbeam-channel = "0.5.6"
 popol = { version = "2.1.0", optional = true }
 polling = { version = "2.4.0", optional = true }
-epoll = { version = "4.3.1", optional = true }
+# epoll = { version = "4.3.1", optional = true } - NB: epoll not supported on MacOS
 mio = { version = "0.8.5", optional = true }
 log = { version = "0.4.17", optional = true, features = ["kv_unstable"] }
 libc = "0.2.139"
 
 [features]
 default = ["popol"]
-all = ["popol", "polling", "epoll", "mio", "log"]
+all = [
+    "popol",
+    "polling",
+#    "epoll",
+    "mio",
+    "log"
+]

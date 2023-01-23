@@ -32,7 +32,7 @@ jobs:
         feature:
           - popol
           - polling
-          - epoll
+          # - epoll
           - mio
           - log
     steps:

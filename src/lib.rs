@@ -42,6 +42,6 @@ mod reactor;
 mod resource;
 mod timeouts;
 
-pub use reactor::{Action, Controller, Error, Handler, Reactor, Runtime};
+pub use self::reactor::{Action, Controller, Error, Handler, Reactor, Runtime};
 pub use resource::{Io, Resource, ResourceId, WriteAtomic, WriteError};
 pub use timeouts::TimeoutManager;
