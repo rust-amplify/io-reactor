@@ -533,6 +533,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             let res = self.poller.poll(Some(timeout));
             let now =
                 SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("system time");
+            self.service.tick(now);
 
             match res {
                 Ok(0) => {
@@ -560,8 +561,6 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     continue;
                 }
             };
-
-            self.service.tick(now);
 
             let awoken = self.handle_events(now);
 
