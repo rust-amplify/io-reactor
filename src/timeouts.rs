@@ -137,31 +137,6 @@ impl<K> TimeoutManager<K> {
         }
         fired.len() - before
     }
-
-    /// Given the current time, add to the input vector keys that
-    /// have timed out. Returns the number of keys that timed out.
-    ///
-    /// ```
-    /// use std::time::Duration;
-    ///
-    /// use reactor::TimeoutManager;
-    ///
-    /// let mut tm = TimeoutManager::new(Duration::from_secs(0));
-    ///
-    /// tm.register(0xA, Duration::from_millis(8));
-    /// tm.register(0xB, Duration::from_millis(16));
-    /// tm.register(0xC, Duration::from_millis(64));
-    /// tm.register(0xD, Duration::from_millis(72));
-    ///
-    /// let mut timeouts = Vec::new();
-    ///
-    /// assert_eq!(tm.check(Duration::from_millis(21), &mut timeouts), 2);
-    /// assert_eq!(timeouts, vec![0xA, 0xB]);
-    /// assert_eq!(tm.len(), 2);
-    /// ```
-    pub fn check_now(&mut self, fired: &mut Vec<K>) -> usize {
-        self.check(Duration::from_millis(0), fired)
-    }
 }
 
 #[cfg(test)]

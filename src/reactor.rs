@@ -529,11 +529,16 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             // Blocking
             #[cfg(feature = "log")]
             log::trace!(target: "reactor", "Polling with timeout {timeout:?}");
-            match self.poller.poll(Some(timeout)) {
+
+            let res = self.poller.poll(Some(timeout));
+            let now =
+                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("system time");
+
+            match res {
                 Ok(0) => {
                     // Nb. The way this is currently used basically ignores which keys have
                     // timed out. So as long as *something* timed out, we wake the service.
-                    self.timeouts.check_now(&mut fired_timers);
+                    self.timeouts.check(now, &mut fired_timers);
                     if !fired_timers.is_empty() {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Timer(s) has fired ({} in total)", fired_timers.len());
@@ -556,8 +561,6 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 }
             };
 
-            let now =
-                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("system time");
             self.service.tick(now);
 
             let awoken = self.handle_events(now);
