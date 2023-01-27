@@ -21,25 +21,65 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::time::Duration;
+use std::collections::BTreeMap;
+use std::ops::{Add, AddAssign, Sub, SubAssign};
+use std::time::{Duration, SystemTime};
+
+/// UNIX timestamp which helps working with absolute time.
+#[derive(Wrapper, WrapperMut, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug, From)]
+#[wrapper(Display, Hex, Octal, Add, Sub)]
+#[wrapper_mut(AddAssign, SubAssign)]
+pub struct Timestamp(u64);
+
+impl Timestamp {
+    /// Creates timestamp matching the current moment.
+    pub fn now() -> Self {
+        let duration =
+            SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("system time");
+        Self(duration.as_secs())
+    }
+
+    /// Converts into number of seconds since UNIX epoch.
+    pub fn into_secs(self) -> u64 { self.0 }
+}
+
+impl Add<Duration> for Timestamp {
+    type Output = Timestamp;
+
+    fn add(self, rhs: Duration) -> Self::Output { Timestamp(self.0 + rhs.as_secs()) }
+}
+
+impl Sub<Duration> for Timestamp {
+    type Output = Timestamp;
+
+    fn sub(self, rhs: Duration) -> Self::Output { Timestamp(self.0 - rhs.as_secs()) }
+}
+
+impl AddAssign<Duration> for Timestamp {
+    fn add_assign(&mut self, rhs: Duration) { self.0 += rhs.as_secs() }
+}
+
+impl SubAssign<Duration> for Timestamp {
+    fn sub_assign(&mut self, rhs: Duration) { self.0 -= rhs.as_secs() }
+}
 
 /// Manages timers and triggers timeouts.
 #[derive(Debug)]
-pub struct TimeoutManager<K = ()> {
+pub struct Timer<K = ()> {
     /// Timeouts are durations since the UNIX epoch.
-    timeouts: Vec<(K, Duration)>,
+    timeouts: BTreeMap<Timestamp, K>,
     /// Threshold below which a timeout can't be added if another timeout is set
     /// within the range of the threshold.
     threshold: Duration,
 }
 
-impl<K> TimeoutManager<K> {
+impl<K> Timer<K> {
     /// Create a new timeout manager.
     ///
     /// Takes a threshold below which two timeouts cannot overlap.
     pub fn new(threshold: Duration) -> Self {
         Self {
-            timeouts: vec![],
+            timeouts: bmap! {},
             threshold,
         }
     }
@@ -56,40 +96,41 @@ impl<K> TimeoutManager<K> {
     /// ```
     /// use std::time::Duration;
     ///
-    /// use reactor::TimeoutManager;
+    /// use reactor::{Timer, Timestamp};
     ///
-    /// let mut tm = TimeoutManager::new(Duration::from_secs(1));
+    /// let mut tm = Timer::new(Duration::from_secs(1));
+    /// let now = Timestamp::now();
     ///
     /// // Sets timeout from Instant::now();
-    /// let registered = tm.register(0xA, Duration::from_secs(8));
+    /// let registered = tm.set_timer(0xA, Duration::from_secs(8), now);
     /// assert!(registered);
     ///
-    /// let registered = tm.register(0xB, Duration::from_secs(9));
+    /// let registered = tm.set_timer(0xB, Duration::from_secs(9), now);
     /// assert!(registered);
     /// assert_eq!(tm.len(), 2);
     ///
-    /// let registered = tm.register(0xC, Duration::from_millis(9541));
+    /// let registered = tm.set_timer(0xC, Duration::from_millis(9541), now);
     /// assert!(!registered);
     ///
-    /// let registered = tm.register(0xC, Duration::from_millis(9999));
+    /// let registered = tm.set_timer(0xC, Duration::from_millis(9999), now);
     /// assert!(!registered);
     /// assert_eq!(tm.len(), 2);
     /// ```
-    pub fn register(&mut self, key: K, time: Duration) -> bool {
+    pub fn set_timer(&mut self, key: K, span: Duration, after: Timestamp) -> bool {
+        let time = after + Timestamp(span.as_secs());
         // If this timeout is too close to a pre-existing timeout,
         // don't register it.
-        if self.timeouts.iter().any(|(_, t)| {
+        if self.timeouts.keys().any(|t| {
             if *t < time {
-                time - *t < self.threshold
+                time - *t < self.threshold.as_secs().into()
             } else {
-                *t - time < self.threshold
+                *t - time < self.threshold.as_secs().into()
             }
         }) {
             return false;
         }
 
-        self.timeouts.push((key, time));
-        self.timeouts.sort_unstable_by(|(_, a), (_, b)| b.cmp(a));
+        self.timeouts.insert(time, key);
 
         true
     }
@@ -99,43 +140,48 @@ impl<K> TimeoutManager<K> {
     ///
     /// ```
     /// # use std::time::{Duration};
-    /// use reactor::TimeoutManager;
+    /// use reactor::{Timer, Timestamp};
     ///
-    /// let mut tm = TimeoutManager::new(Duration::from_secs(0));
+    /// let mut tm = Timer::new(Duration::from_secs(0));
     ///
-    /// tm.register(0xA, Duration::from_millis(16));
-    /// tm.register(0xB, Duration::from_millis(8));
-    /// tm.register(0xC, Duration::from_millis(64));
+    /// let now = Timestamp::now();
+    /// tm.set_timer(0xA, Duration::from_secs(16), now);
+    /// tm.set_timer(0xB, Duration::from_secs(8), now);
+    /// tm.set_timer(0xC, Duration::from_secs(64), now);
     ///
-    /// let mut now = Duration::from_millis(0);
-    /// // We need to wait 8 millis to trigger the next timeout (1).
-    /// assert!(tm.next(now) <= Some(Duration::from_millis(8)));
+    /// let mut now = Timestamp::now();
+    /// // We need to wait 8 secs to trigger the next timeout (1).
+    /// assert!(tm.next(now) <= Some(Duration::from_secs(8)));
     ///
-    /// // ... sleep for a millisecond ...
-    /// now += Duration::from_millis(1);
+    /// // ... sleep for a sec ...
+    /// now += Duration::from_secs(1);
     ///
     /// // Now we don't need to wait as long!
-    /// assert!(tm.next(now).unwrap() <= Duration::from_millis(7));
+    /// assert!(tm.next(now).unwrap() <= Duration::from_secs(7));
     /// ```
-    pub fn next(&self, now: impl Into<Duration>) -> Option<Duration> {
-        let now = now.into();
-        self.timeouts.last().map(|(_, t)| if *t >= now { *t - now } else { Duration::from_secs(0) })
+    pub fn next(&self, after: impl Into<Timestamp>) -> Option<Duration> {
+        let after = after.into();
+        self.timeouts
+            .keys()
+            .find(|t| **t >= after)
+            .map(|t| Duration::from_secs((*t - after).into_secs()))
     }
 
-    /// Given a specific time, add to the input vector keys that
-    /// have timed out by that time. Returns the number of keys that timed out.
-    pub fn check(&mut self, time: Duration, fired: &mut Vec<K>) -> usize {
-        let before = fired.len();
+    /// Returns number of timers which has fired before certain time.
+    pub fn count_fired(&mut self, time: Timestamp) -> usize {
+        self.timeouts.iter().take_while(move |(t, _)| **t <= time).count()
+    }
 
-        while let Some((k, t)) = self.timeouts.pop() {
-            if time >= t {
-                fired.push(k);
-            } else {
-                self.timeouts.push((k, t));
-                break;
-            }
-        }
-        fired.len() - before
+    /// Returns iterator over timers which has fired before certain time.
+    pub fn iter_fired(&mut self, time: Timestamp) -> impl Iterator<Item = &K> {
+        self.timeouts.iter().take_while(move |(t, _)| **t <= time).map(|(_, k)| k)
+    }
+
+    /// Returns vector of timers which has fired before certain time.
+    pub fn split_fired(mut self, time: Timestamp) -> (Vec<K>, Self) {
+        let (fired, timeouts) = self.timeouts.into_iter().partition(move |(t, _)| *t <= time);
+        self.timeouts = timeouts;
+        (fired.into_values().collect::<Vec<_>>(), self)
     }
 }
 
@@ -145,33 +191,28 @@ mod tests {
 
     #[test]
     fn test_wake() {
-        let mut tm = TimeoutManager::new(Duration::from_secs(0));
+        let mut tm = Timer::new(Duration::from_secs(0));
 
-        tm.register(0xA, Duration::from_millis(8));
-        tm.register(0xB, Duration::from_millis(16));
-        tm.register(0xC, Duration::from_millis(64));
-        tm.register(0xD, Duration::from_millis(72));
+        let now = Timestamp::now();
+        tm.set_timer(0xA, Duration::from_secs(8), now);
+        tm.set_timer(0xB, Duration::from_secs(16), now);
+        tm.set_timer(0xC, Duration::from_secs(64), now);
+        tm.set_timer(0xD, Duration::from_secs(72), now);
 
-        let mut timeouts = Vec::new();
-
-        let now = Duration::from_millis(0);
-        assert_eq!(tm.check(now, &mut timeouts), 0);
-        assert_eq!(timeouts, vec![]);
+        assert_eq!(tm.count_fired(now), 0);
         assert_eq!(tm.len(), 4);
-        assert_eq!(tm.check(now + Duration::from_millis(9), &mut timeouts), 1);
-        assert_eq!(timeouts, vec![0xA]);
+
+        let (fired, tm) = tm.split_fired(now + Duration::from_secs(9));
+        assert_eq!(fired, vec![0xA]);
+        eprintln!("{:#?}", tm);
         assert_eq!(tm.len(), 3, "one timeout has expired");
 
-        timeouts.clear();
-
-        assert_eq!(tm.check(now + Duration::from_millis(66), &mut timeouts), 2);
-        assert_eq!(timeouts, vec![0xB, 0xC]);
+        let (fired, tm) = tm.split_fired(now + Duration::from_secs(66));
+        assert_eq!(fired, vec![0xB, 0xC]);
         assert_eq!(tm.len(), 1, "another two timeouts have expired");
 
-        timeouts.clear();
-
-        assert_eq!(tm.check(now + Duration::from_millis(96), &mut timeouts), 1);
-        assert_eq!(timeouts, vec![0xD]);
+        let (fired, tm) = tm.split_fired(now + Duration::from_secs(96));
+        assert_eq!(fired, vec![0xD]);
         assert!(tm.is_empty(), "all timeouts have expired");
     }
 }
