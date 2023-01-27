@@ -530,7 +530,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             #[cfg(feature = "log")]
             log::trace!(target: "reactor", "Polling with timeout {timeout:?}");
 
-            let res = self.poller.poll(Some(timeout));
+            let res = self.poller.poll(Some(timeout - before_poll));
             let now =
                 SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("system time");
             self.service.tick(now);
