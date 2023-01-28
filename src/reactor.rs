@@ -306,7 +306,7 @@ impl<C> Reactor<C> {
                 listener_map: empty!(),
                 transport_map: empty!(),
                 waker: waker_reader,
-                timeouts: Timer::new(Duration::from_secs(1)),
+                timeouts: Timer::new(),
             };
 
             #[cfg(feature = "log")]
@@ -500,7 +500,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             listener_map: empty!(),
             transport_map: empty!(),
             waker: waker_reader,
-            timeouts: Timer::new(Duration::from_secs(1)),
+            timeouts: Timer::new(),
         })
     }
 
@@ -534,11 +534,10 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 Ok(0) => {
                     // Nb. The way this is currently used basically ignores which keys have
                     // timed out. So as long as *something* timed out, we wake the service.
-                    let (fired_timers, timeouts) = self.timeouts.split_fired(now);
-                    self.timeouts = timeouts;
-                    if !fired_timers.is_empty() {
+                    let count = self.timeouts.expire(now);
+                    if count > 0 {
                         #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Timer(s) has fired ({} in total)", fired_timers.len());
+                        log::trace!(target: "reactor", "Timer has fired");
                         self.service.handle_timer();
                     } else {
                         #[cfg(feature = "log")]
@@ -765,7 +764,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Adding timer {duration:?} from now");
 
-                self.timeouts.set_timer((), duration, time);
+                self.timeouts.set_timer(duration, time);
             }
         }
         Ok(())
