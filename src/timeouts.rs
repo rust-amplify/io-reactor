@@ -29,38 +29,55 @@ use std::time::{Duration, SystemTime};
 #[derive(Wrapper, WrapperMut, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug, From)]
 #[wrapper(Display, LowerHex, UpperHex, Octal, Add, Sub)]
 #[wrapper_mut(AddAssign, SubAssign)]
-pub struct Timestamp(u64);
+pub struct Timestamp(u128);
 
 impl Timestamp {
     /// Creates timestamp matching the current moment.
     pub fn now() -> Self {
         let duration =
             SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("system time");
-        Self(duration.as_secs())
+        Self(duration.as_millis())
     }
 
     /// Converts into number of seconds since UNIX epoch.
-    pub fn into_secs(self) -> u64 { self.0 }
+    pub fn into_secs(self) -> u64 {
+        (self.0 / 1000) as u64
+    }
+
+    /// Converts into number of milliseconds since UNIX epoch.
+    pub fn into_millis(self) -> u64 {
+        // Nb. We have enough space in a `u64` to store a unix timestamp in millisecond
+        // precision for millions of years.
+        self.0 as u64
+    }
 }
 
 impl Add<Duration> for Timestamp {
     type Output = Timestamp;
 
-    fn add(self, rhs: Duration) -> Self::Output { Timestamp(self.0 + rhs.as_secs()) }
+    fn add(self, rhs: Duration) -> Self::Output {
+        Timestamp(self.0 + rhs.as_millis())
+    }
 }
 
 impl Sub<Duration> for Timestamp {
     type Output = Timestamp;
 
-    fn sub(self, rhs: Duration) -> Self::Output { Timestamp(self.0 - rhs.as_secs()) }
+    fn sub(self, rhs: Duration) -> Self::Output {
+        Timestamp(self.0 - rhs.as_millis())
+    }
 }
 
 impl AddAssign<Duration> for Timestamp {
-    fn add_assign(&mut self, rhs: Duration) { self.0 += rhs.as_secs() }
+    fn add_assign(&mut self, rhs: Duration) {
+        self.0 += rhs.as_millis()
+    }
 }
 
 impl SubAssign<Duration> for Timestamp {
-    fn sub_assign(&mut self, rhs: Duration) { self.0 -= rhs.as_secs() }
+    fn sub_assign(&mut self, rhs: Duration) {
+        self.0 -= rhs.as_millis()
+    }
 }
 
 /// Manages timers and triggers timeouts.
@@ -85,7 +102,7 @@ impl Timer {
     /// Register a new timeout with an associated key and wake-up time from a
     /// UNIX time epoch.
     pub fn set_timer(&mut self, span: Duration, after: Timestamp) {
-        let time = after + Timestamp(span.as_secs());
+        let time = after + Timestamp(span.as_millis());
         self.timeouts.insert(time);
     }
 
@@ -118,7 +135,7 @@ impl Timer {
         self.timeouts
             .iter()
             .find(|t| **t >= after)
-            .map(|t| Duration::from_secs((*t - after).into_secs()))
+            .map(|t| Duration::from_millis((*t - after).into_millis()))
     }
 
     /// Returns vector of timers which has fired before certain time.
