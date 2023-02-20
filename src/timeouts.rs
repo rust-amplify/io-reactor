@@ -123,9 +123,15 @@ impl Timer {
 
     /// Returns vector of timers which has fired before certain time.
     pub fn expire(&mut self, time: Timestamp) -> usize {
-        let remainder = self.timeouts.split_off(&time);
+        // Since `split_off` returns everything *after* the given key, including the key,
+        // if a timer is set for exactly the given time, it would remain in the "after"
+        // set of unexpired keys. This isn't what we want, therefore we add `1` to the
+        // given time value so that it is put in the "before" set that gets expired
+        // and overwritten.
+        let at = Timestamp(time.0 + 1);
+        let unexpired = self.timeouts.split_off(&at);
         let fired = self.timeouts.len();
-        self.timeouts = remainder;
+        self.timeouts = unexpired;
         fired
     }
 }
@@ -133,6 +139,19 @@ impl Timer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_wake_exact() {
+        let mut tm = Timer::new();
+
+        let now = Timestamp::now();
+        tm.set_timer(Duration::from_secs(8), now);
+        tm.set_timer(Duration::from_secs(9), now);
+        tm.set_timer(Duration::from_secs(10), now);
+
+        assert_eq!(tm.expire(now + Duration::from_secs(9)), 2);
+        assert_eq!(tm.len(), 1);
+    }
 
     #[test]
     fn test_wake() {
