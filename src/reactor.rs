@@ -777,3 +777,117 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         // We just drop here?
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::io::stdout;
+    use std::thread::sleep;
+
+    use super::*;
+    use crate::{poller, Io};
+
+    pub struct DumbRes(Box<dyn AsRawFd + Send>);
+    impl DumbRes {
+        pub fn new() -> DumbRes { DumbRes(Box::new(stdout())) }
+    }
+    impl AsRawFd for DumbRes {
+        fn as_raw_fd(&self) -> RawFd { self.0.as_raw_fd() }
+    }
+    impl Write for DumbRes {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> { Ok(buf.len()) }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+    impl WriteAtomic for DumbRes {
+        fn is_ready_to_write(&self) -> bool { true }
+        fn empty_write_buf(&mut self) -> io::Result<bool> { Ok(true) }
+        fn write_or_buf(&mut self, buf: &[u8]) -> io::Result<()> { Ok(()) }
+    }
+    impl Resource for DumbRes {
+        type Id = RawFd;
+        type Event = ();
+        fn id(&self) -> Self::Id { self.0.as_raw_fd() }
+        fn interests(&self) -> IoType { IoType::read_write() }
+        fn handle_io(&mut self, io: Io) -> Option<Self::Event> { None }
+    }
+
+    #[test]
+    fn timer() {
+        #[derive(Clone, Eq, PartialEq, Debug)]
+        enum Cmd {
+            Init,
+            Expect(Vec<Event>),
+        }
+        #[derive(Clone, Eq, PartialEq, Debug)]
+        enum Event {
+            Timer,
+        }
+        #[derive(Clone, Debug, Default)]
+        struct DumbService {
+            pub add_resource: bool,
+            pub set_timer: bool,
+            pub log: Vec<Event>,
+        }
+        impl Iterator for DumbService {
+            type Item = Action<DumbRes, DumbRes>;
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.add_resource {
+                    self.add_resource = false;
+                    Some(Action::RegisterTransport(DumbRes::new()))
+                } else if self.set_timer {
+                    self.set_timer = false;
+                    Some(Action::SetTimer(Duration::from_secs(3)))
+                } else {
+                    None
+                }
+            }
+        }
+        impl Handler for DumbService {
+            type Listener = DumbRes;
+            type Transport = DumbRes;
+            type Command = Cmd;
+
+            fn tick(&mut self, time: Timestamp) {}
+            fn handle_timer(&mut self) {
+                self.log.push(Event::Timer);
+                self.set_timer = true;
+            }
+            fn handle_listener_event(
+                &mut self,
+                id: <Self::Listener as Resource>::Id,
+                event: <Self::Listener as Resource>::Event,
+                time: Timestamp,
+            ) {
+                unreachable!()
+            }
+            fn handle_transport_event(
+                &mut self,
+                id: <Self::Transport as Resource>::Id,
+                event: <Self::Transport as Resource>::Event,
+                time: Timestamp,
+            ) {
+                unreachable!()
+            }
+            fn handle_command(&mut self, cmd: Self::Command) {
+                match cmd {
+                    Cmd::Init => {
+                        self.add_resource = true;
+                        self.set_timer = true;
+                    }
+                    Cmd::Expect(expected) => {
+                        assert_eq!(expected, self.log);
+                    }
+                }
+            }
+            fn handle_error(&mut self, err: Error<Self::Listener, Self::Transport>) {
+                panic!("{err}")
+            }
+            fn handover_listener(&mut self, listener: Self::Listener) { unreachable!() }
+            fn handover_transport(&mut self, transport: Self::Transport) { unreachable!() }
+        }
+
+        let reactor = Reactor::new(DumbService::default(), poller::popol::Poller::new()).unwrap();
+        reactor.controller().cmd(Cmd::Init).unwrap();
+        sleep(Duration::from_secs(20));
+        reactor.controller().cmd(Cmd::Expect(vec![Event::Timer; 6])).unwrap();
+    }
+}
