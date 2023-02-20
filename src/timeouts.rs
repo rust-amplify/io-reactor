@@ -27,7 +27,7 @@ use std::time::{Duration, SystemTime};
 
 /// UNIX timestamp which helps working with absolute time.
 #[derive(Wrapper, WrapperMut, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug, From)]
-#[wrapper(Display, Hex, Octal, Add, Sub)]
+#[wrapper(Display, LowerHex, UpperHex, Octal, Add, Sub)]
 #[wrapper_mut(AddAssign, SubAssign)]
 pub struct Timestamp(u64);
 
