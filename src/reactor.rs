@@ -530,30 +530,27 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             let now = Timestamp::now();
             self.service.tick(now);
 
-            match res {
-                Ok(0) => {
-                    // Nb. The way this is currently used basically ignores which keys have
-                    // timed out. So as long as *something* timed out, we wake the service.
-                    let count = self.timeouts.expire(now);
-                    if count > 0 {
-                        #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Timer has fired");
-                        self.service.handle_timer();
-                    } else {
-                        #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Poll timeout; no I/O events had happened");
-                    }
+            // Nb. The way this is currently used basically ignores which keys have
+            // timed out. So as long as *something* timed out, we wake the service.
+            let timers_fired = self.timeouts.expire(now);
+            if timers_fired > 0 {
+                #[cfg(feature = "log")]
+                log::trace!(target: "reactor", "Timer has fired");
+                self.service.handle_timer();
+            }
 
-                    continue;
+            match res {
+                Ok(0) if timers_fired == 0 => {
+                    #[cfg(feature = "log")]
+                    log::trace!(target: "reactor", "Poll timeout; no I/O events had happened");
                 }
-                Ok(count) => count,
                 Err(err) => {
                     #[cfg(feature = "log")]
                     log::error!(target: "reactor", "Error during polling: {err}");
                     self.service.handle_error(Error::Poll(err));
-                    continue;
                 }
-            };
+                _ => {}
+            }
 
             let awoken = self.handle_events(now);
 
