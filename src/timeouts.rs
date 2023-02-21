@@ -55,29 +55,21 @@ impl Timestamp {
 impl Add<Duration> for Timestamp {
     type Output = Timestamp;
 
-    fn add(self, rhs: Duration) -> Self::Output {
-        Timestamp(self.0 + rhs.as_millis())
-    }
+    fn add(self, rhs: Duration) -> Self::Output { Timestamp(self.0 + rhs.as_millis()) }
 }
 
 impl Sub<Duration> for Timestamp {
     type Output = Timestamp;
 
-    fn sub(self, rhs: Duration) -> Self::Output {
-        Timestamp(self.0 - rhs.as_millis())
-    }
+    fn sub(self, rhs: Duration) -> Self::Output { Timestamp(self.0 - rhs.as_millis()) }
 }
 
 impl AddAssign<Duration> for Timestamp {
-    fn add_assign(&mut self, rhs: Duration) {
-        self.0 += rhs.as_millis()
-    }
+    fn add_assign(&mut self, rhs: Duration) { self.0 += rhs.as_millis() }
 }
 
 impl SubAssign<Duration> for Timestamp {
-    fn sub_assign(&mut self, rhs: Duration) {
-        self.0 -= rhs.as_millis()
-    }
+    fn sub_assign(&mut self, rhs: Duration) { self.0 -= rhs.as_millis() }
 }
 
 /// Manages timers and triggers timeouts.
