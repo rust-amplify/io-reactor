@@ -39,6 +39,12 @@ impl Timestamp {
         Self(duration.as_millis())
     }
 
+    /// Constructs timestamp from a given number of seconds since [`SystemTime::UNIX_EPOCH`].
+    pub fn from_secs(secs: u64) -> Timestamp { Timestamp(secs as u128 * 1000) }
+
+    /// Constructs timestamp from a given number of milliseconds since [`SystemTime::UNIX_EPOCH`].
+    pub fn from_millis(millis: u128) -> Timestamp { Timestamp(millis) }
+
     #[deprecated(note = "use Timestamp::as_secs")]
     /// Returns number of seconds since UNIX epoch.
     pub fn into_secs(self) -> u64 { self.as_secs() }
