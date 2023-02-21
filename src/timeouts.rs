@@ -145,7 +145,7 @@ impl Timer {
         // set of unexpired keys. This isn't what we want, therefore we add `1` to the
         // given time value so that it is put in the "before" set that gets expired
         // and overwritten.
-        let at = Timestamp(time.0 + 1);
+        let at = time + Timestamp::from_millis(1);
         let unexpired = self.timeouts.split_off(&at);
         let fired = self.timeouts.len();
         self.timeouts = unexpired;
