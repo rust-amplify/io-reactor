@@ -28,14 +28,14 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use std::{io, thread};
 
 use crossbeam_channel as chan;
 
 use crate::poller::{IoFail, IoType, Poll};
 use crate::resource::WriteError;
-use crate::{Resource, TimeoutManager, WriteAtomic};
+use crate::{Resource, Timer, Timestamp, WriteAtomic};
 
 /// Maximum amount of time to wait for I/O.
 const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -151,7 +151,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     type Command: Debug + Send;
 
     /// Method called by the reactor on the start of each event loop once the poll has returned.
-    fn tick(&mut self, time: Duration);
+    fn tick(&mut self, time: Timestamp);
 
     /// Method called by the reactor when a previously set timeout is fired.
     ///
@@ -166,7 +166,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
         &mut self,
         id: <Self::Listener as Resource>::Id,
         event: <Self::Listener as Resource>::Event,
-        time: Duration,
+        time: Timestamp,
     );
 
     /// Method called by the reactor upon I/O event on a transport resource.
@@ -174,7 +174,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
         &mut self,
         id: <Self::Transport as Resource>::Id,
         event: <Self::Transport as Resource>::Event,
-        time: Duration,
+        time: Timestamp,
     );
 
     /// Method called by the reactor when a [`Self::Command`] is received for the [`Handler`].
@@ -306,7 +306,7 @@ impl<C> Reactor<C> {
                 listener_map: empty!(),
                 transport_map: empty!(),
                 waker: waker_reader,
-                timeouts: TimeoutManager::new(Duration::from_secs(1)),
+                timeouts: Timer::new(),
             };
 
             #[cfg(feature = "log")]
@@ -472,7 +472,7 @@ pub struct Runtime<H: Handler, P: Poll> {
     listeners: HashMap<<H::Listener as Resource>::Id, H::Listener>,
     transports: HashMap<<H::Transport as Resource>::Id, H::Transport>,
     waker: UnixStream,
-    timeouts: TimeoutManager,
+    timeouts: Timer,
 }
 
 impl<H: Handler, P: Poll> Runtime<H, P> {
@@ -500,7 +500,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             listener_map: empty!(),
             transport_map: empty!(),
             waker: waker_reader,
-            timeouts: TimeoutManager::new(Duration::from_secs(1)),
+            timeouts: Timer::new(),
         })
     }
 
@@ -511,12 +511,8 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     pub fn controller(&self) -> Controller<H::Command> { self.controller.clone() }
 
     fn run(mut self) {
-        // We just do not want to re-allocate it on each loop.
-        let mut fired_timers = Vec::with_capacity(32);
-
         loop {
-            let before_poll =
-                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("system time");
+            let before_poll = Timestamp::now();
             let timeout = self.timeouts.next(before_poll).unwrap_or(WAIT_TIMEOUT);
 
             for res in self.listeners.values() {
@@ -529,36 +525,32 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             // Blocking
             #[cfg(feature = "log")]
             log::trace!(target: "reactor", "Polling with timeout {timeout:?}");
-            match self.poller.poll(Some(timeout)) {
-                Ok(0) => {
-                    // Nb. The way this is currently used basically ignores which keys have
-                    // timed out. So as long as *something* timed out, we wake the service.
-                    self.timeouts.check_now(&mut fired_timers);
-                    if !fired_timers.is_empty() {
-                        #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Timer(s) has fired ({} in total)", fired_timers.len());
 
-                        fired_timers.clear();
-                        self.service.handle_timer();
-                    } else {
-                        #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Poll timeout; no I/O events had happened");
-                    }
+            let res = self.poller.poll(Some(timeout));
+            let now = Timestamp::now();
+            self.service.tick(now);
 
-                    continue;
+            // Nb. The way this is currently used basically ignores which keys have
+            // timed out. So as long as *something* timed out, we wake the service.
+            let timers_fired = self.timeouts.expire(now);
+            if timers_fired > 0 {
+                #[cfg(feature = "log")]
+                log::trace!(target: "reactor", "Timer has fired");
+                self.service.handle_timer();
+            }
+
+            match res {
+                Ok(0) if timers_fired == 0 => {
+                    #[cfg(feature = "log")]
+                    log::trace!(target: "reactor", "Poll timeout; no I/O events had happened");
                 }
-                Ok(count) => count,
                 Err(err) => {
                     #[cfg(feature = "log")]
                     log::error!(target: "reactor", "Error during polling: {err}");
                     self.service.handle_error(Error::Poll(err));
-                    continue;
                 }
-            };
-
-            let now =
-                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("system time");
-            self.service.tick(now);
+                _ => {}
+            }
 
             let awoken = self.handle_events(now);
 
@@ -583,7 +575,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     /// # Returns
     ///
     /// Whether it was awaken by a waker
-    fn handle_events(&mut self, time: Duration) -> bool {
+    fn handle_events(&mut self, time: Timestamp) -> bool {
         let mut awoken = false;
 
         let mut unregister_queue = vec![];
@@ -672,7 +664,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         awoken
     }
 
-    fn handle_actions(&mut self, time: Duration) {
+    fn handle_actions(&mut self, time: Timestamp) {
         while let Some(action) = self.service.next() {
             #[cfg(feature = "log")]
             log::trace!(target: "reactor", "Handling action {action} from the service");
@@ -690,7 +682,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     fn handle_action(
         &mut self,
         action: Action<H::Listener, H::Transport>,
-        time: Duration,
+        time: Timestamp,
     ) -> Result<(), Error<H::Listener, H::Transport>> {
         match action {
             Action::RegisterListener(listener) => {
@@ -769,7 +761,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Adding timer {duration:?} from now");
 
-                self.timeouts.register((), time + duration);
+                self.timeouts.set_timer(duration, time);
             }
         }
         Ok(())
@@ -780,5 +772,119 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         log::info!(target: "reactor", "Shutdown");
 
         // We just drop here?
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::io::stdout;
+    use std::thread::sleep;
+
+    use super::*;
+    use crate::{poller, Io};
+
+    pub struct DumbRes(Box<dyn AsRawFd + Send>);
+    impl DumbRes {
+        pub fn new() -> DumbRes { DumbRes(Box::new(stdout())) }
+    }
+    impl AsRawFd for DumbRes {
+        fn as_raw_fd(&self) -> RawFd { self.0.as_raw_fd() }
+    }
+    impl Write for DumbRes {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> { Ok(buf.len()) }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+    impl WriteAtomic for DumbRes {
+        fn is_ready_to_write(&self) -> bool { true }
+        fn empty_write_buf(&mut self) -> io::Result<bool> { Ok(true) }
+        fn write_or_buf(&mut self, _buf: &[u8]) -> io::Result<()> { Ok(()) }
+    }
+    impl Resource for DumbRes {
+        type Id = RawFd;
+        type Event = ();
+        fn id(&self) -> Self::Id { self.0.as_raw_fd() }
+        fn interests(&self) -> IoType { IoType::read_write() }
+        fn handle_io(&mut self, _io: Io) -> Option<Self::Event> { None }
+    }
+
+    #[test]
+    fn timer() {
+        #[derive(Clone, Eq, PartialEq, Debug)]
+        enum Cmd {
+            Init,
+            Expect(Vec<Event>),
+        }
+        #[derive(Clone, Eq, PartialEq, Debug)]
+        enum Event {
+            Timer,
+        }
+        #[derive(Clone, Debug, Default)]
+        struct DumbService {
+            pub add_resource: bool,
+            pub set_timer: bool,
+            pub log: Vec<Event>,
+        }
+        impl Iterator for DumbService {
+            type Item = Action<DumbRes, DumbRes>;
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.add_resource {
+                    self.add_resource = false;
+                    Some(Action::RegisterTransport(DumbRes::new()))
+                } else if self.set_timer {
+                    self.set_timer = false;
+                    Some(Action::SetTimer(Duration::from_millis(3)))
+                } else {
+                    None
+                }
+            }
+        }
+        impl Handler for DumbService {
+            type Listener = DumbRes;
+            type Transport = DumbRes;
+            type Command = Cmd;
+
+            fn tick(&mut self, _time: Timestamp) {}
+            fn handle_timer(&mut self) {
+                self.log.push(Event::Timer);
+                self.set_timer = true;
+            }
+            fn handle_listener_event(
+                &mut self,
+                _d: <Self::Listener as Resource>::Id,
+                _event: <Self::Listener as Resource>::Event,
+                _time: Timestamp,
+            ) {
+                unreachable!()
+            }
+            fn handle_transport_event(
+                &mut self,
+                _id: <Self::Transport as Resource>::Id,
+                _event: <Self::Transport as Resource>::Event,
+                _time: Timestamp,
+            ) {
+                unreachable!()
+            }
+            fn handle_command(&mut self, cmd: Self::Command) {
+                match cmd {
+                    Cmd::Init => {
+                        self.add_resource = true;
+                        self.set_timer = true;
+                    }
+                    Cmd::Expect(expected) => {
+                        assert_eq!(expected, self.log);
+                    }
+                }
+            }
+            fn handle_error(&mut self, err: Error<Self::Listener, Self::Transport>) {
+                panic!("{err}")
+            }
+            fn handover_listener(&mut self, _listener: Self::Listener) { unreachable!() }
+            fn handover_transport(&mut self, _transport: Self::Transport) { unreachable!() }
+        }
+
+        let reactor = Reactor::new(DumbService::default(), poller::popol::Poller::new()).unwrap();
+        reactor.controller().cmd(Cmd::Init).unwrap();
+        sleep(Duration::from_secs(2));
+        reactor.controller().cmd(Cmd::Expect(vec![Event::Timer; 6])).unwrap();
     }
 }
