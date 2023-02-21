@@ -797,14 +797,14 @@ mod test {
     impl WriteAtomic for DumbRes {
         fn is_ready_to_write(&self) -> bool { true }
         fn empty_write_buf(&mut self) -> io::Result<bool> { Ok(true) }
-        fn write_or_buf(&mut self, buf: &[u8]) -> io::Result<()> { Ok(()) }
+        fn write_or_buf(&mut self, _buf: &[u8]) -> io::Result<()> { Ok(()) }
     }
     impl Resource for DumbRes {
         type Id = RawFd;
         type Event = ();
         fn id(&self) -> Self::Id { self.0.as_raw_fd() }
         fn interests(&self) -> IoType { IoType::read_write() }
-        fn handle_io(&mut self, io: Io) -> Option<Self::Event> { None }
+        fn handle_io(&mut self, _io: Io) -> Option<Self::Event> { None }
     }
 
     #[test]
@@ -843,24 +843,24 @@ mod test {
             type Transport = DumbRes;
             type Command = Cmd;
 
-            fn tick(&mut self, time: Timestamp) {}
+            fn tick(&mut self, _time: Timestamp) {}
             fn handle_timer(&mut self) {
                 self.log.push(Event::Timer);
                 self.set_timer = true;
             }
             fn handle_listener_event(
                 &mut self,
-                id: <Self::Listener as Resource>::Id,
-                event: <Self::Listener as Resource>::Event,
-                time: Timestamp,
+                _d: <Self::Listener as Resource>::Id,
+                _event: <Self::Listener as Resource>::Event,
+                _time: Timestamp,
             ) {
                 unreachable!()
             }
             fn handle_transport_event(
                 &mut self,
-                id: <Self::Transport as Resource>::Id,
-                event: <Self::Transport as Resource>::Event,
-                time: Timestamp,
+                _id: <Self::Transport as Resource>::Id,
+                _event: <Self::Transport as Resource>::Event,
+                _time: Timestamp,
             ) {
                 unreachable!()
             }
@@ -878,8 +878,8 @@ mod test {
             fn handle_error(&mut self, err: Error<Self::Listener, Self::Transport>) {
                 panic!("{err}")
             }
-            fn handover_listener(&mut self, listener: Self::Listener) { unreachable!() }
-            fn handover_transport(&mut self, transport: Self::Transport) { unreachable!() }
+            fn handover_listener(&mut self, _listener: Self::Listener) { unreachable!() }
+            fn handover_transport(&mut self, _transport: Self::Transport) { unreachable!() }
         }
 
         let reactor = Reactor::new(DumbService::default(), poller::popol::Poller::new()).unwrap();
