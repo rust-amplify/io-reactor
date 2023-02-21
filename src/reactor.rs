@@ -832,7 +832,7 @@ mod test {
                     Some(Action::RegisterTransport(DumbRes::new()))
                 } else if self.set_timer {
                     self.set_timer = false;
-                    Some(Action::SetTimer(Duration::from_secs(3)))
+                    Some(Action::SetTimer(Duration::from_millis(3)))
                 } else {
                     None
                 }
@@ -884,7 +884,7 @@ mod test {
 
         let reactor = Reactor::new(DumbService::default(), poller::popol::Poller::new()).unwrap();
         reactor.controller().cmd(Cmd::Init).unwrap();
-        sleep(Duration::from_secs(20));
+        sleep(Duration::from_secs(2));
         reactor.controller().cmd(Cmd::Expect(vec![Event::Timer; 6])).unwrap();
     }
 }
