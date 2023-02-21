@@ -39,13 +39,15 @@ impl Timestamp {
         Self(duration.as_millis())
     }
 
-    /// Converts into number of seconds since UNIX epoch.
-    pub fn into_secs(self) -> u64 {
-        (self.0 / 1000) as u64
-    }
+    #[deprecated(note = "use Timestamp::as_secs")]
+    /// Returns number of seconds since UNIX epoch.
+    pub fn into_secs(self) -> u64 { self.as_secs() }
 
-    /// Converts into number of milliseconds since UNIX epoch.
-    pub fn into_millis(self) -> u64 {
+    /// Returns number of seconds since UNIX epoch.
+    pub fn as_secs(&self) -> u64 { (self.0 / 1000) as u64 }
+
+    /// Returns number of milliseconds since UNIX epoch.
+    pub fn as_millis(&self) -> u64 {
         // Nb. We have enough space in a `u64` to store a unix timestamp in millisecond
         // precision for millions of years.
         self.0 as u64
@@ -127,7 +129,7 @@ impl Timer {
         self.timeouts
             .iter()
             .find(|t| **t >= after)
-            .map(|t| Duration::from_millis((*t - after).into_millis()))
+            .map(|t| Duration::from_millis((*t - after).as_millis()))
     }
 
     /// Returns vector of timers which has fired before certain time.
