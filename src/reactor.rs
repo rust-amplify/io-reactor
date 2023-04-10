@@ -57,16 +57,16 @@ pub enum Error<L: Resource, T: Resource> {
     WriteLogicError(T::Id, Vec<u8>),
 
     /// transport {0} got disconnected during poll operation.
-    ListenerDisconnect(L::Id, L, i16),
+    ListenerDisconnect(L::Id, L),
 
     /// transport {0} got disconnected during poll operation.
-    TransportDisconnect(T::Id, T, i16),
+    TransportDisconnect(T::Id, T),
 
     /// poll on listener {0} has returned error.
-    ListenerPollError(L::Id, i16),
+    ListenerPollError(L::Id),
 
     /// poll on transport {0} has returned error.
-    TransportPollError(T::Id, i16),
+    TransportPollError(T::Id),
 
     /// polling multiple reactor has failed. Details: {0:?}
     Poll(io::Error),
@@ -604,13 +604,13 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
                         let listener = self.listeners.remove(id).expect("resource disappeared");
                         unregister_queue.push(listener.as_raw_fd());
-                        self.service.handle_error(Error::ListenerDisconnect(*id, listener, flags));
+                        self.service.handle_error(Error::ListenerDisconnect(*id, listener));
                     }
                     Err(IoFail::Os(flags)) => {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Listener {id} errored (OS flags {flags:#b})");
 
-                        self.service.handle_error(Error::ListenerPollError(*id, flags));
+                        self.service.handle_error(Error::ListenerPollError(*id));
                     }
                 }
             } else if let Some(id) = self.transport_map.get(&fd) {
@@ -632,14 +632,13 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
                         let transport = self.transports.remove(id).expect("resource disappeared");
                         unregister_queue.push(transport.as_raw_fd());
-                        self.service
-                            .handle_error(Error::TransportDisconnect(*id, transport, flags));
+                        self.service.handle_error(Error::TransportDisconnect(*id, transport));
                     }
                     Err(IoFail::Os(flags)) => {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Transport {id} errored (OS flags {flags:#b})");
 
-                        self.service.handle_error(Error::TransportPollError(*id, flags));
+                        self.service.handle_error(Error::TransportPollError(*id));
                     }
                 }
             } else {
