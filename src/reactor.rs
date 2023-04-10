@@ -44,12 +44,6 @@ const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 #[derive(Error, Display, From)]
 #[display(doc_comments)]
 pub enum Error<L: Resource, T: Resource> {
-    /// unknown listener {0}
-    ListenerUnknown(L::Id),
-
-    /// unknown transport {0}
-    TransportUnknown(T::Id),
-
     /// unable to write to transport {0}. Details: {1:?}
     WriteFailure(T::Id, io::Error),
 
@@ -700,7 +694,12 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 self.transport_map.insert(fd, id);
             }
             Action::UnregisterListener(id) => {
-                let listener = self.listeners.remove(&id).ok_or(Error::ListenerUnknown(id))?;
+                let Some(listener) = self.listeners.remove(&id) else {
+                    #[cfg(feature = "log")]
+                    log::warn!(target: "reactor", "Unregistering non-registered listener {id}");
+
+                    return Ok(())
+                };
                 let fd = listener.as_raw_fd();
 
                 #[cfg(feature = "log")]
@@ -713,7 +712,12 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 self.service.handover_listener(listener);
             }
             Action::UnregisterTransport(id) => {
-                let transport = self.transports.remove(&id).ok_or(Error::TransportUnknown(id))?;
+                let Some(transport) = self.transports.remove(&id) else {
+                    #[cfg(feature = "log")]
+                    log::warn!(target: "reactor", "Unregistering non-registered transport {id}");
+
+                    return Ok(())
+                };
                 let fd = transport.as_raw_fd();
 
                 #[cfg(feature = "log")]
@@ -729,12 +733,12 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 #[cfg(feature = "log")]
                 log::trace!(target: "reactor", "Sending {} bytes to {id}", data.len());
 
-                let transport = self.transports.get_mut(&id).ok_or_else(|| {
+                let Some(transport) = self.transports.get_mut(&id) else {
                     #[cfg(feature = "log")]
                     log::error!(target: "reactor", "Transport {id} is not in the reactor");
 
-                    Error::TransportUnknown(id)
-                })?;
+                    return Ok(())
+                };
                 transport.write_atomic(&data).map_err(|err| match err {
                     WriteError::NotReady => {
                         #[cfg(feature = "log")]
