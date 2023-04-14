@@ -400,32 +400,34 @@ impl<C> Controller<C> {
         #[cfg(feature = "log")]
         log::trace!(target: "reactor-controller", "Wakening the reactor");
 
-        #[allow(unused_variables)]
-        let mut waker = self.waker.lock().map_err(|err| {
-            #[cfg(feature = "log")]
-            log::error!(target: "reactor-controller", "Waker lock is poisoned: {err}");
-            WouldBlock
-        })?;
-        match waker.write_all(&[0x1]) {
-            Ok(_) => Ok(()),
-            Err(e) if e.kind() == WouldBlock => {
-                #[cfg(feature = "log")]
-                log::error!(target: "reactor-controller", "Waker write queue got overfilled, resetting and repeating...");
-
-                reset_fd(&waker.as_raw_fd())?;
-                self.wake()
+        let mut waker = loop {
+            match self.waker.lock() {
+                Err(err) => {
+                    #[cfg(feature = "log")]
+                    log::error!(target: "reactor-controller", "Waker lock is poisoned: {err}");
+                }
+                Ok(waker) => break waker,
             }
-            Err(e) if e.kind() == Interrupted => {
-                #[cfg(feature = "log")]
-                log::error!(target: "reactor-controller", "Waker failure, repeating...");
+        };
 
-                self.wake()
-            }
-            Err(e) => {
-                #[cfg(feature = "log")]
-                log::error!(target: "reactor-controller", "Waker error: {e}");
+        loop {
+            match waker.write_all(&[0x1]) {
+                Ok(_) => return Ok(()),
+                Err(e) if e.kind() == WouldBlock => {
+                    #[cfg(feature = "log")]
+                    log::error!(target: "reactor-controller", "Waker write queue got overfilled, resetting and repeating...");
+                    reset_fd(&waker.as_raw_fd())?;
+                }
+                Err(e) if e.kind() == Interrupted => {
+                    #[cfg(feature = "log")]
+                    log::error!(target: "reactor-controller", "Waker failure, repeating...");
+                }
+                Err(e) => {
+                    #[cfg(feature = "log")]
+                    log::error!(target: "reactor-controller", "Waker error: {e}");
 
-                Err(e)
+                    return Err(e);
+                }
             }
         }
     }
