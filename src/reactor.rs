@@ -26,7 +26,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::io::Write;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{io, thread};
@@ -284,7 +284,7 @@ impl<C> Reactor<C> {
 
         let controller = Controller {
             ctl_send,
-            waker: Arc::new(Mutex::new(waker_writer)),
+            waker: Arc::new(waker_writer),
         };
 
         #[cfg(feature = "log")]
@@ -343,7 +343,7 @@ enum Ctl<C> {
 /// [`Handler::Command`] for the details).
 pub struct Controller<C> {
     ctl_send: chan::Sender<Ctl<C>>,
-    waker: Arc<Mutex<UnixStream>>,
+    waker: Arc<UnixStream>,
 }
 
 impl<C> Clone for Controller<C> {
@@ -400,32 +400,25 @@ impl<C> Controller<C> {
         #[cfg(feature = "log")]
         log::trace!(target: "reactor-controller", "Wakening the reactor");
 
-        #[allow(unused_variables)]
-        let mut waker = self.waker.lock().map_err(|err| {
-            #[cfg(feature = "log")]
-            log::error!(target: "reactor-controller", "Waker lock is poisoned: {err}");
-            WouldBlock
-        })?;
-        match waker.write_all(&[0x1]) {
-            Ok(_) => Ok(()),
-            Err(e) if e.kind() == WouldBlock => {
-                #[cfg(feature = "log")]
-                log::error!(target: "reactor-controller", "Waker write queue got overfilled, resetting and repeating...");
+        loop {
+            let mut waker = self.waker.as_ref();
+            match (&mut waker).write_all(&[0x1]) {
+                Ok(_) => return Ok(()),
+                Err(e) if e.kind() == WouldBlock => {
+                    #[cfg(feature = "log")]
+                    log::error!(target: "reactor-controller", "Waker write queue got overfilled, resetting and repeating...");
+                    reset_fd(&self.waker.as_raw_fd())?;
+                }
+                Err(e) if e.kind() == Interrupted => {
+                    #[cfg(feature = "log")]
+                    log::error!(target: "reactor-controller", "Waker failure, repeating...");
+                }
+                Err(e) => {
+                    #[cfg(feature = "log")]
+                    log::error!(target: "reactor-controller", "Waker error: {e}");
 
-                reset_fd(&waker.as_raw_fd())?;
-                self.wake()
-            }
-            Err(e) if e.kind() == Interrupted => {
-                #[cfg(feature = "log")]
-                log::error!(target: "reactor-controller", "Waker failure, repeating...");
-
-                self.wake()
-            }
-            Err(e) => {
-                #[cfg(feature = "log")]
-                log::error!(target: "reactor-controller", "Waker error: {e}");
-
-                Err(e)
+                    return Err(e);
+                }
             }
         }
     }
@@ -487,7 +480,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
         let controller = Controller {
             ctl_send,
-            waker: Arc::new(Mutex::new(waker_writer)),
+            waker: Arc::new(waker_writer),
         };
 
         Ok(Runtime {
