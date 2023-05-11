@@ -23,6 +23,7 @@
 
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
+use std::io::ErrorKind;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::prelude::RawFd;
 use std::{io, net};
@@ -88,11 +89,27 @@ pub enum WriteError {
 pub trait WriteAtomic: io::Write {
     /// Atomic non-blocking I/O write operation, which must either write the whole buffer to a
     /// resource without blocking - or fail with [`WriteError::NotReady`] error.
+    ///
+    /// # Safety
+    ///
+    /// Panics on invalid [`WriteAtomic::write_or_buf`] implementation, i.e. if it doesn't handle
+    /// EGAGAIN, EINTER, EWOULDBLOCK I/O errors by buffering the data and returns them instead.
     fn write_atomic(&mut self, buf: &[u8]) -> Result<(), WriteError> {
         if !self.is_ready_to_write() {
             Err(WriteError::NotReady)
         } else {
-            self.write_or_buf(buf).map_err(WriteError::from)
+            // TODO: on EGAGAIN, EINTER, EWOULDBLOCK just keep the data buffered
+            self.write_or_buf(buf).map_err(|err| {
+                debug_assert!(
+                    matches!(
+                        err.kind(),
+                        ErrorKind::WouldBlock | ErrorKind::Interrupted | ErrorKind::WriteZero
+                    ),
+                    "WriteAtomic::write_or_buf must handle EGAGAIN, EINTER, EWOULDBLOCK errors by \
+                     buffering the data"
+                );
+                WriteError::from(err)
+            })
         }
     }
 
@@ -113,5 +130,11 @@ pub trait WriteAtomic: io::Write {
     /// with a system-level error.
     ///
     /// This method shouldn't be called directly; [`Self::write_atomic`] must be used instead.
+    ///
+    /// # Safety
+    ///
+    /// The method must handle EGAGAIN, EINTER, EWOULDBLOCK I/O errors and buffer the data in such
+    /// cases. Ig these errors are returned from this methods [`WriteAtomic::write_atomic`] will
+    /// panic.
     fn write_or_buf(&mut self, buf: &[u8]) -> io::Result<()>;
 }
