@@ -42,20 +42,13 @@ const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Reactor errors
 #[derive(Error, Display, From)]
+#[display(doc_comments)]
 pub enum Error<L: Resource, T: Resource> {
     /// transport {0} got disconnected during poll operation.
     ListenerDisconnect(L::Id, L),
 
     /// transport {0} got disconnected during poll operation.
     TransportDisconnect(T::Id, T),
-
-    /// poll on listener {0} has returned error.
-    ListenerPollError(L::Id),
-
-    // to transport disconnect
-    /// Poll request has returned [`IoFail::Os`] event for a specific resource.
-    #[display("transport {0} failed during I/O poll")]
-    TransportPollError(T::Id),
 
     /// polling multiple reactor has failed. Details: {0:?}
     Poll(io::Error),
@@ -561,7 +554,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         let mut awoken = false;
 
         let mut unregister_queue = vec![];
-        for (fd, res) in &mut self.poller {
+        while let Some((fd, res)) = self.poller.next() {
             if fd == self.waker.as_raw_fd() {
                 if let Err(err) = res {
                     #[cfg(feature = "log")]
@@ -598,8 +591,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     Err(IoFail::Os(flags)) => {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Listener {id} errored (OS flags {flags:#b})");
-
-                        self.service.handle_error(Error::ListenerPollError(*id));
+                        self.unregister_listener(*id);
                     }
                 }
             } else if let Some(id) = self.transport_map.get(&fd) {
@@ -626,8 +618,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     Err(IoFail::Os(posix_events)) => {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Transport {id} errored (POSIX events are {posix_events:#b})");
-
-                        self.service.handle_error(Error::TransportPollError(*id));
+                        self.unregister_transport(*id);
                     }
                 }
             } else {
@@ -694,39 +685,19 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 self.transport_map.insert(fd, id);
             }
             Action::UnregisterListener(id) => {
-                let Some(listener) = self.listeners.remove(&id) else {
-                    #[cfg(feature = "log")]
-                    log::warn!(target: "reactor", "Unregistering non-registered listener {id}");
-
+                let Some(listener) = self.unregister_listener(id) else {
                     return Ok(())
                 };
-                let fd = listener.as_raw_fd();
-
                 #[cfg(feature = "log")]
-                log::debug!(target: "reactor", "Handling over listener {id} (fd={fd})");
-
-                self.listener_map
-                    .remove(&fd)
-                    .expect("listener index content doesn't match registered listeners");
-                self.poller.unregister(&listener);
+                log::debug!(target: "reactor", "Handling over listener {id}");
                 self.service.handover_listener(listener);
             }
             Action::UnregisterTransport(id) => {
-                let Some(transport) = self.transports.remove(&id) else {
-                    #[cfg(feature = "log")]
-                    log::warn!(target: "reactor", "Unregistering non-registered transport {id}");
-
+                let Some(transport) = self.unregister_transport(id) else {
                     return Ok(())
                 };
-                let fd = transport.as_raw_fd();
-
                 #[cfg(feature = "log")]
-                log::debug!(target: "reactor", "Handling over transport {id} (fd={fd})");
-
-                self.transport_map
-                    .remove(&fd)
-                    .expect("transport index content doesn't match registered transports");
-                self.poller.unregister(&transport);
+                log::debug!(target: "reactor", "Handling over transport {id}");
                 self.service.handover_transport(transport);
             }
             Action::Send(id, data) => {
@@ -739,8 +710,8 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
                     return Ok(())
                 };
-                transport.write_atomic(&data).map_err(|err| match err {
-                    WriteError::NotReady => {
+                match transport.write_atomic(&data) {
+                    Err(WriteError::NotReady) => {
                         #[cfg(feature = "log")]
                         log::error!(target: "reactor", internal = true; 
                                 "An attempt to write to transport {id} before it got ready");
@@ -749,12 +720,13 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                              read-only or not ready for a write operation"
                         );
                     }
-                    WriteError::Io(e) => {
+                    Err(WriteError::Io(e)) => {
                         #[cfg(feature = "log")]
-                        log::error!(target: "reactor", "Error writing to transport {id}: {e:?}");
-                        Error::WriteFailure(id, e)
+                        log::error!(target: "reactor", "Fatal error writing to transport {id}, disconnecting. Error details: {e:?}");
+                        self.unregister_transport(id);
                     }
-                })?;
+                    Ok(_) => {}
+                }
             }
             Action::SetTimer(duration) => {
                 #[cfg(feature = "log")]
@@ -771,6 +743,46 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         log::info!(target: "reactor", "Shutdown");
 
         // We just drop here?
+    }
+
+    fn unregister_listener(&mut self, id: <H::Listener as Resource>::Id) -> Option<H::Listener> {
+        let Some(listener) = self.listeners.remove(&id) else {
+            #[cfg(feature = "log")]
+            log::warn!(target: "reactor", "Unregistering non-registered listener {id}");
+            return None
+        };
+
+        let fd = listener.as_raw_fd();
+
+        #[cfg(feature = "log")]
+        log::debug!(target: "reactor", "Handling over listener {id} (fd={fd})");
+
+        self.listener_map
+            .remove(&fd)
+            .expect("listener index content doesn't match registered listeners");
+        self.poller.unregister(&listener);
+
+        Some(listener)
+    }
+
+    fn unregister_transport(&mut self, id: <H::Transport as Resource>::Id) -> Option<H::Transport> {
+        let Some(transport) = self.transports.remove(&id) else {
+            #[cfg(feature = "log")]
+            log::warn!(target: "reactor", "Unregistering non-registered transport {id}");
+            return None
+        };
+
+        let fd = transport.as_raw_fd();
+
+        #[cfg(feature = "log")]
+        log::debug!(target: "reactor", "Unregistering over transport {id} (fd={fd})");
+
+        self.transport_map
+            .remove(&fd)
+            .expect("transport index content doesn't match registered transports");
+        self.poller.unregister(&transport);
+
+        Some(transport)
     }
 }
 
