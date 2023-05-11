@@ -46,9 +46,6 @@ pub enum Error<L: Resource, T: Resource> {
     /// unable to write to transport {0}. Details: {1:?}
     WriteFailure(T::Id, io::Error),
 
-    /// writing to transport {0} before it is ready (business logic bug)
-    WriteLogicError(T::Id, Vec<u8>),
-
     /// transport {0} got disconnected during poll operation.
     ListenerDisconnect(L::Id, L),
 
@@ -666,6 +663,11 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         }
     }
 
+    /// # Safety
+    ///
+    /// Panics on `Action::Send` for read-only resources or resources which are not ready for a
+    /// write operation (i.e. returning `false` from [`WriteAtomic::is_ready_to_write`]
+    /// implementation.
     fn handle_action(
         &mut self,
         action: Action<H::Listener, H::Transport>,
@@ -745,7 +747,10 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         #[cfg(feature = "log")]
                         log::error!(target: "reactor", internal = true; 
                                 "An attempt to write to transport {id} before it got ready");
-                        Error::WriteLogicError(id, data)
+                        panic!(
+                            "application business logic error: write to transport {id} which is \
+                             read-only or not ready for a write operation"
+                        );
                     }
                     WriteError::Io(e) => {
                         #[cfg(feature = "log")]
