@@ -723,7 +723,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     Err(WriteError::Io(e)) => {
                         #[cfg(feature = "log")]
                         log::error!(target: "reactor", "Fatal error writing to transport {id}, disconnecting. Error details: {e:?}");
-                        self.unregister_transport(id);
+                        if let Some(transport) = self.unregister_transport(id) {
+                            return Err(Error::TransportDisconnect(id, transport));
+                        }
                     }
                     Ok(_) => {}
                 }
