@@ -43,9 +43,6 @@ const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// Reactor errors
 #[derive(Error, Display, From)]
 pub enum Error<L: Resource, T: Resource> {
-    /// unable to write to transport {0}. Details: {1:?}
-    WriteFailure(T::Id, io::Error),
-
     /// transport {0} got disconnected during poll operation.
     ListenerDisconnect(L::Id, L),
 
