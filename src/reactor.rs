@@ -42,7 +42,6 @@ const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Reactor errors
 #[derive(Error, Display, From)]
-#[display(doc_comments)]
 pub enum Error<L: Resource, T: Resource> {
     /// unable to write to transport {0}. Details: {1:?}
     WriteFailure(T::Id, io::Error),
@@ -59,7 +58,9 @@ pub enum Error<L: Resource, T: Resource> {
     /// poll on listener {0} has returned error.
     ListenerPollError(L::Id),
 
-    /// poll on transport {0} has returned error.
+    // to transport disconnect
+    /// Poll request has returned [`IoFail::Os`] event for a specific resource.
+    #[display("transport {0} failed during I/O poll")]
     TransportPollError(T::Id),
 
     /// polling multiple reactor has failed. Details: {0:?}
@@ -620,17 +621,17 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                             }
                         }
                     }
-                    Err(IoFail::Connectivity(flags)) => {
+                    Err(IoFail::Connectivity(posix_events)) => {
                         #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Transport {id} hanged up (OS flags {flags:#b})");
+                        log::trace!(target: "reactor", "Transport {id} hanged up (POSIX events are {posix_events:#b})");
 
                         let transport = self.transports.remove(id).expect("resource disappeared");
                         unregister_queue.push(transport.as_raw_fd());
                         self.service.handle_error(Error::TransportDisconnect(*id, transport));
                     }
-                    Err(IoFail::Os(flags)) => {
+                    Err(IoFail::Os(posix_events)) => {
                         #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Transport {id} errored (OS flags {flags:#b})");
+                        log::trace!(target: "reactor", "Transport {id} errored (POSIX events are {posix_events:#b})");
 
                         self.service.handle_error(Error::TransportPollError(*id));
                     }
