@@ -1,6 +1,6 @@
 [package]
 name = "io-reactor"
-version = "0.1.2"
+version = "0.2.0"
 description = "Concurrent I/O resource management using reactor pattern"
 authors = [
     "Dr. Maxim Orlovsky <orlovsky@ubideco.org>",
@@ -10,7 +10,7 @@ keywords = ["reactor", "networking", "patterns", "concurrency", "poll"]
 categories = ["concurrency", "asynchronous", "network-programming", "rust-patterns"]
 homepage = "https://github.com/rust-amplify"
 repository = "https://github.com/rust-amplify/io-reactor"
-rust-version = "1.60"
+rust-version = "1.65" # Due to if ... let clause
 edition = "2021"
 license = "Apache-2.0"
 readme = "README.md"
