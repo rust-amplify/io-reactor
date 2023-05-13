@@ -206,12 +206,12 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
 ///
 /// Apps running the [`Reactor`] can interface it and a [`Handler`] via use of the [`Controller`]
 /// API.
-pub struct Reactor<C, W: Waker> {
+pub struct Reactor<C, P: Poll> {
     thread: JoinHandle<()>,
-    controller: Controller<C, W::Send>,
+    controller: Controller<C, <P::Waker as Waker>::Send>,
 }
 
-impl<C, W: Waker> Reactor<C, W> {
+impl<C, P: Poll> Reactor<C, P> {
     /// Creates new reactor using provided [`Poll`] engine and a service exposing [`Handler`] API to
     /// the reactor.
     ///
@@ -221,14 +221,10 @@ impl<C, W: Waker> Reactor<C, W> {
     /// # Error
     ///
     /// Errors with a system/OS error if it was impossible to spawn a thread.
-    pub fn new<P: Poll<Waker = W>, H: Handler<Command = C>>(
-        service: H,
-        poller: P,
-    ) -> Result<Self, io::Error>
+    pub fn new<H: Handler<Command = C>>(service: H, poller: P) -> Result<Self, io::Error>
     where
         H: 'static,
         P: 'static,
-        W: 'static,
         C: 'static + Send,
     {
         Reactor::with(service, poller, thread::Builder::new())
@@ -244,7 +240,7 @@ impl<C, W: Waker> Reactor<C, W> {
     /// # Error
     ///
     /// Errors with a system/OS error if it was impossible to spawn a thread.
-    pub fn named<P: Poll<Waker = W>, H: Handler<Command = C>>(
+    pub fn named<H: Handler<Command = C>>(
         service: H,
         poller: P,
         thread_name: String,
@@ -252,7 +248,6 @@ impl<C, W: Waker> Reactor<C, W> {
     where
         H: 'static,
         P: 'static,
-        W: 'static,
         C: 'static + Send,
     {
         Reactor::with(service, poller, thread::Builder::new().name(thread_name))
@@ -268,7 +263,7 @@ impl<C, W: Waker> Reactor<C, W> {
     /// # Error
     ///
     /// Errors with a system/OS error if it was impossible to spawn a thread.
-    pub fn with<P: Poll<Waker = W>, H: Handler<Command = C>>(
+    pub fn with<H: Handler<Command = C>>(
         service: H,
         mut poller: P,
         builder: thread::Builder,
@@ -276,7 +271,6 @@ impl<C, W: Waker> Reactor<C, W> {
     where
         H: 'static,
         P: 'static,
-        W: 'static,
         C: 'static + Send,
     {
         let (ctl_send, ctl_recv) = chan::unbounded();
@@ -325,7 +319,7 @@ impl<C, W: Waker> Reactor<C, W> {
     /// running inside of its thread.
     ///
     /// See [`Handler::Command`] for the details.
-    pub fn controller(&self) -> Controller<C, W::Send> { self.controller.clone() }
+    pub fn controller(&self) -> Controller<C, <P::Waker as Waker>::Send> { self.controller.clone() }
 
     /// Joins the reactor thread.
     pub fn join(self) -> thread::Result<()> { self.thread.join() }
