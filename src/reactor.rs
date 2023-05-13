@@ -23,17 +23,14 @@
 
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
-use std::io::Write;
 use std::os::unix::io::{AsRawFd, RawFd};
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{io, thread};
 
 use crossbeam_channel as chan;
 
-use crate::poller::{IoFail, IoType, Poll};
+use crate::poller::{IoFail, IoType, Poll, Waker, WakerRecv, WakerSend};
 use crate::resource::WriteError;
 use crate::{Resource, Timer, Timestamp, WriteAtomic};
 
@@ -209,12 +206,12 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
 ///
 /// Apps running the [`Reactor`] can interface it and a [`Handler`] via use of the [`Controller`]
 /// API.
-pub struct Reactor<C> {
+pub struct Reactor<C, W: Waker> {
     thread: JoinHandle<()>,
-    controller: Controller<C>,
+    controller: Controller<C, W::Send>,
 }
 
-impl<C> Reactor<C> {
+impl<C, W: Waker> Reactor<C, W> {
     /// Creates new reactor using provided [`Poll`] engine and a service exposing [`Handler`] API to
     /// the reactor.
     ///
@@ -224,10 +221,14 @@ impl<C> Reactor<C> {
     /// # Error
     ///
     /// Errors with a system/OS error if it was impossible to spawn a thread.
-    pub fn new<P: Poll, H: Handler<Command = C>>(service: H, poller: P) -> Result<Self, io::Error>
+    pub fn new<P: Poll<Waker = W>, H: Handler<Command = C>>(
+        service: H,
+        poller: P,
+    ) -> Result<Self, io::Error>
     where
         H: 'static,
         P: 'static,
+        W: 'static,
         C: 'static + Send,
     {
         Reactor::with(service, poller, thread::Builder::new())
@@ -243,7 +244,7 @@ impl<C> Reactor<C> {
     /// # Error
     ///
     /// Errors with a system/OS error if it was impossible to spawn a thread.
-    pub fn named<P: Poll, H: Handler<Command = C>>(
+    pub fn named<P: Poll<Waker = W>, H: Handler<Command = C>>(
         service: H,
         poller: P,
         thread_name: String,
@@ -251,6 +252,7 @@ impl<C> Reactor<C> {
     where
         H: 'static,
         P: 'static,
+        W: 'static,
         C: 'static + Send,
     {
         Reactor::with(service, poller, thread::Builder::new().name(thread_name))
@@ -266,7 +268,7 @@ impl<C> Reactor<C> {
     /// # Error
     ///
     /// Errors with a system/OS error if it was impossible to spawn a thread.
-    pub fn with<P: Poll, H: Handler<Command = C>>(
+    pub fn with<P: Poll<Waker = W>, H: Handler<Command = C>>(
         service: H,
         mut poller: P,
         builder: thread::Builder,
@@ -274,17 +276,16 @@ impl<C> Reactor<C> {
     where
         H: 'static,
         P: 'static,
+        W: 'static,
         C: 'static + Send,
     {
         let (ctl_send, ctl_recv) = chan::unbounded();
 
-        let (waker_writer, waker_reader) = UnixStream::pair()?;
-        waker_reader.set_nonblocking(true)?;
-        waker_writer.set_nonblocking(true)?;
+        let (waker_writer, waker_reader) = P::Waker::pair()?;
 
         let controller = Controller {
             ctl_send,
-            waker: Arc::new(waker_writer),
+            waker: waker_writer,
         };
 
         #[cfg(feature = "log")]
@@ -324,7 +325,7 @@ impl<C> Reactor<C> {
     /// running inside of its thread.
     ///
     /// See [`Handler::Command`] for the details.
-    pub fn controller(&self) -> Controller<C> { self.controller.clone() }
+    pub fn controller(&self) -> Controller<C, W::Send> { self.controller.clone() }
 
     /// Joins the reactor thread.
     pub fn join(self) -> thread::Result<()> { self.thread.join() }
@@ -341,12 +342,12 @@ enum Ctl<C> {
 /// API to the reactor itself for receiving reactor-generated events. This API is used by the
 /// reactor to inform the service about incoming commands, sent via this [`Controller`] API (see
 /// [`Handler::Command`] for the details).
-pub struct Controller<C> {
+pub struct Controller<C, W: WakerSend> {
     ctl_send: chan::Sender<Ctl<C>>,
-    waker: Arc<UnixStream>,
+    waker: W,
 }
 
-impl<C> Clone for Controller<C> {
+impl<C, W: WakerSend> Clone for Controller<C, W> {
     fn clone(&self) -> Self {
         Controller {
             ctl_send: self.ctl_send.clone(),
@@ -355,7 +356,7 @@ impl<C> Clone for Controller<C> {
     }
 }
 
-impl<C> Controller<C> {
+impl<C, W: WakerSend> Controller<C, W> {
     /// Send a command to the service inside a [`Reactor`] or a reactor [`Runtime`].
     #[allow(unused_mut)] // because of the `log` feature gate
     pub fn cmd(&self, mut command: C) -> Result<(), io::Error>
@@ -395,56 +396,9 @@ impl<C> Controller<C> {
     }
 
     fn wake(&self) -> io::Result<()> {
-        use io::ErrorKind::*;
-
         #[cfg(feature = "log")]
         log::trace!(target: "reactor-controller", "Wakening the reactor");
-
-        loop {
-            let mut waker = self.waker.as_ref();
-            match (&mut waker).write_all(&[0x1]) {
-                Ok(_) => return Ok(()),
-                Err(e) if e.kind() == WouldBlock => {
-                    #[cfg(feature = "log")]
-                    log::error!(target: "reactor-controller", "Waker write queue got overfilled, resetting and repeating...");
-                    reset_fd(&self.waker.as_raw_fd())?;
-                }
-                Err(e) if e.kind() == Interrupted => {
-                    #[cfg(feature = "log")]
-                    log::error!(target: "reactor-controller", "Waker failure, repeating...");
-                }
-                Err(e) => {
-                    #[cfg(feature = "log")]
-                    log::error!(target: "reactor-controller", "Waker error: {e}");
-
-                    return Err(e);
-                }
-            }
-        }
-    }
-}
-
-fn reset_fd(fd: &impl AsRawFd) -> io::Result<()> {
-    let mut buf = [0u8; 4096];
-
-    loop {
-        // We use a low-level "read" here because the alternative is to create a `UnixStream`
-        // from the `RawFd`, which has "drop" semantics which we want to avoid.
-        match unsafe {
-            libc::read(fd.as_raw_fd(), buf.as_mut_ptr() as *mut libc::c_void, buf.len())
-        } {
-            -1 => match io::Error::last_os_error() {
-                e if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-                e => {
-                    #[cfg(feature = "log")]
-                    log::error!(target: "reactor-controller", "Unable to reset waker queue: {e}");
-
-                    return Err(e);
-                }
-            },
-            0 => return Ok(()),
-            _ => continue,
-        }
+        self.waker.wake()
     }
 }
 
@@ -458,13 +412,13 @@ fn reset_fd(fd: &impl AsRawFd) -> io::Result<()> {
 pub struct Runtime<H: Handler, P: Poll> {
     service: H,
     poller: P,
-    controller: Controller<H::Command>,
+    controller: Controller<H::Command, <P::Waker as Waker>::Send>,
     ctl_recv: chan::Receiver<Ctl<H::Command>>,
     listener_map: HashMap<RawFd, <H::Listener as Resource>::Id>,
     transport_map: HashMap<RawFd, <H::Transport as Resource>::Id>,
     listeners: HashMap<<H::Listener as Resource>::Id, H::Listener>,
     transports: HashMap<<H::Transport as Resource>::Id, H::Transport>,
-    waker: UnixStream,
+    waker: <P::Waker as Waker>::Recv,
     timeouts: Timer,
 }
 
@@ -474,13 +428,11 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     pub fn with(service: H, poller: P) -> io::Result<Self> {
         let (ctl_send, ctl_recv) = chan::unbounded();
 
-        let (waker_writer, waker_reader) = UnixStream::pair()?;
-        waker_reader.set_nonblocking(true)?;
-        waker_writer.set_nonblocking(true)?;
+        let (waker_writer, waker_reader) = P::Waker::pair()?;
 
         let controller = Controller {
             ctl_send,
-            waker: Arc::new(waker_writer),
+            waker: waker_writer,
         };
 
         Ok(Runtime {
@@ -501,7 +453,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     /// running inside of its thread.
     ///
     /// See [`Handler::Command`] for the details.
-    pub fn controller(&self) -> Controller<H::Command> { self.controller.clone() }
+    pub fn controller(&self) -> Controller<H::Command, <P::Waker as Waker>::Send> {
+        self.controller.clone()
+    }
 
     fn run(mut self) {
         loop {
@@ -583,7 +537,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 #[cfg(feature = "log")]
                 log::trace!(target: "reactor", "Awoken by the controller");
 
-                reset_fd(&self.waker).expect("waker failure");
+                self.waker.reset();
                 awoken = true;
             } else if let Some(id) = self.listener_map.get(&fd) {
                 match res {
@@ -783,7 +737,7 @@ mod test {
     impl AsRawFd for DumbRes {
         fn as_raw_fd(&self) -> RawFd { self.0.as_raw_fd() }
     }
-    impl Write for DumbRes {
+    impl io::Write for DumbRes {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> { Ok(buf.len()) }
         fn flush(&mut self) -> io::Result<()> { Ok(()) }
     }

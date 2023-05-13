@@ -150,6 +150,9 @@ where
     Self: Send + Iterator<Item = (RawFd, Result<IoType, IoFail>)>,
     for<'a> &'a mut Self: Iterator<Item = (RawFd, Result<IoType, IoFail>)>,
 {
+    /// Waker type used by the poll provider.
+    type Waker: Waker;
+
     /// Registers a file-descriptor based resource for a poll.
     fn register(&mut self, fd: &impl AsRawFd, interest: IoType);
     /// Unregisters a file-descriptor based resource from a poll.
@@ -164,4 +167,27 @@ where
     ///
     /// Number of generated events.
     fn poll(&mut self, timeout: Option<Duration>) -> io::Result<usize>;
+}
+
+/// Waker object provided by the poller.
+pub trait Waker {
+    /// Data tyoe for sending wake signals to the poller.
+    type Send: WakerSend;
+    /// Data type for receiving wake signals inside the poller.
+    type Recv: WakerRecv;
+
+    /// Constructs pair of waker receiver and sender objects.
+    fn pair() -> Result<(Self::Send, Self::Recv), io::Error>;
+}
+
+/// Sending part of the waker.
+pub trait WakerSend: AsRawFd + Send + Sync + Clone {
+    /// Awakes the poller to read events.
+    fn wake(&self) -> io::Result<()>;
+}
+
+/// Receiver part of the waker.
+pub trait WakerRecv: AsRawFd + Send + io::Read {
+    /// Resets the waker reader.
+    fn reset(&self);
 }
