@@ -181,7 +181,7 @@ pub trait Waker {
 }
 
 /// Sending part of the waker.
-pub trait WakerSend: AsRawFd + Send + Sync + Clone {
+pub trait WakerSend: Send + Sync + Clone {
     /// Awakes the poller to read events.
     fn wake(&self) -> io::Result<()>;
 }
