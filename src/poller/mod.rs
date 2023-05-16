@@ -171,7 +171,7 @@ where
 
 /// Waker object provided by the poller.
 pub trait Waker {
-    /// Data tyoe for sending wake signals to the poller.
+    /// Data type for sending wake signals to the poller.
     type Send: WakerSend;
     /// Data type for receiving wake signals inside the poller.
     type Recv: WakerRecv;
