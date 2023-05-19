@@ -24,11 +24,12 @@
 //! Poll engine provided by the [`popol`] crate.
 
 use std::collections::VecDeque;
-use std::io;
+use std::io::{self, Error};
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::poller::{IoFail, IoType, Poll};
+use crate::poller::{IoFail, IoType, Poll, Waker, WakerRecv, WakerSend};
 
 /// Manager for a set of reactor which are polled for an event loop by the
 /// re-actor by using [`popol`] library.
@@ -61,6 +62,8 @@ impl Poller {
 }
 
 impl Poll for Poller {
+    type Waker = PopolWaker;
+
     fn register(&mut self, fd: &impl AsRawFd, interest: IoType) {
         #[cfg(feature = "log")]
         log::trace!(target: "popol", "Registering {}", fd.as_raw_fd());
@@ -155,4 +158,45 @@ impl From<IoType> for popol::Interest {
         }
         e
     }
+}
+
+/// Wrapper type around the waker provided by `popol` crate.
+#[derive(Clone)]
+pub struct PopolWaker(Arc<popol::Waker>);
+
+impl Waker for PopolWaker {
+    type Send = Self;
+    type Recv = Self;
+
+    fn pair() -> Result<(Self::Send, Self::Recv), Error> {
+        let waker = Arc::new(popol::Waker::new()?);
+        Ok((PopolWaker(waker.clone()), PopolWaker(waker)))
+    }
+}
+
+impl io::Read for PopolWaker {
+    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+        self.reset();
+        // Waker reads only when there is something which was sent.
+        // That's why we just return here.
+        Ok(0)
+    }
+}
+
+impl AsRawFd for PopolWaker {
+    fn as_raw_fd(&self) -> RawFd { self.0.as_ref().as_raw_fd() }
+}
+
+impl WakerRecv for PopolWaker {
+    fn reset(&self) {
+        if let Err(e) = popol::Waker::reset(self.0.as_ref()) {
+            #[cfg(feature = "log")]
+            log::error!(target: "reactor-controller", "Unable to reset waker queue: {e}");
+            panic!("unable to reset waker queue. Details: {e}");
+        }
+    }
+}
+
+impl WakerSend for PopolWaker {
+    fn wake(&self) -> io::Result<()> { self.0.wake() }
 }
