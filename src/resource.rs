@@ -98,14 +98,13 @@ pub trait WriteAtomic: io::Write {
         if !self.is_ready_to_write() {
             Err(WriteError::NotReady)
         } else {
-            // TODO: on EGAGAIN, EINTER, EWOULDBLOCK just keep the data buffered
             self.write_or_buf(buf).map_err(|err| {
                 debug_assert!(
-                    matches!(
+                    !matches!(
                         err.kind(),
                         ErrorKind::WouldBlock | ErrorKind::Interrupted | ErrorKind::WriteZero
                     ),
-                    "WriteAtomic::write_or_buf must handle EGAGAIN, EINTER, EWOULDBLOCK errors by \
+                    "WriteAtomic::write_or_buf must handle EGAGAIN, EINTR, EWOULDBLOCK errors by \
                      buffering the data"
                 );
                 WriteError::from(err)
