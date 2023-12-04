@@ -401,10 +401,14 @@ pub struct Runtime<H: Handler, P: Poll> {
 impl<H: Handler, P: Poll> Runtime<H, P> {
     /// Creates new reactor runtime using provided [`Poll`] engine and a service exposing
     /// [`Handler`] API to the reactor.
-    pub fn with(service: H, poller: P) -> io::Result<Self> {
+    pub fn with(service: H, mut poller: P) -> io::Result<Self> {
         let (ctl_send, ctl_recv) = chan::unbounded();
 
         let (waker_writer, waker_reader) = P::Waker::pair()?;
+
+        #[cfg(feature = "log")]
+        log::debug!(target: "reactor", "Registering waker (fd {})", waker_reader.as_raw_fd());
+        let waker_id = poller.register(&waker_reader, IoType::read_only());
 
         let controller = Controller {
             ctl_send,
