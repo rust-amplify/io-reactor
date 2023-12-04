@@ -27,11 +27,12 @@
 pub mod popol;
 
 use std::fmt::{self, Display, Formatter};
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::AsRawFd;
 use std::time::Duration;
 use std::{io, ops};
 
 use crate::resource::Io;
+use crate::ResourceId;
 
 /// Information about I/O events which has happened for a resource.
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug)]
@@ -147,19 +148,19 @@ pub enum IoFail {
 /// To read I/O events from the engine please use its Iterator interface.
 pub trait Poll
 where
-    Self: Send + Iterator<Item = (RawFd, Result<IoType, IoFail>)>,
-    for<'a> &'a mut Self: Iterator<Item = (RawFd, Result<IoType, IoFail>)>,
+    Self: Send + Iterator<Item = (ResourceId, Result<IoType, IoFail>)>,
+    for<'a> &'a mut Self: Iterator<Item = (ResourceId, Result<IoType, IoFail>)>,
 {
     /// Waker type used by the poll provider.
     type Waker: Waker;
 
     /// Registers a file-descriptor based resource for a poll.
-    fn register(&mut self, fd: &impl AsRawFd, interest: IoType);
+    fn register(&mut self, fd: &impl AsRawFd, interest: IoType) -> ResourceId;
     /// Unregisters a file-descriptor based resource from a poll.
-    fn unregister(&mut self, fd: &impl AsRawFd);
+    fn unregister(&mut self, id: ResourceId);
     /// Subscribes for a specific set of events for a given file descriptor-backed resource (see
     /// [`IoType`] for the details on event subscription).
-    fn set_interest(&mut self, fd: &impl AsRawFd, interest: IoType) -> bool;
+    fn set_interest(&mut self, id: ResourceId, interest: IoType) -> bool;
 
     /// Runs single poll syscall over all registered resources with an optional timeout.
     ///
