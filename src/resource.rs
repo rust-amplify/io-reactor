@@ -40,7 +40,15 @@ pub enum Io {
 
 /// The resource identifier must be globally unique and non-reusable object. Because of this,
 /// things like [`RawFd`] and socket addresses can't operate like resource identifiers.
-pub type ResourceId = u64;
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display)]
+#[display(inner)]
+pub struct ResourceId(u64);
+
+impl ResourceId {
+    pub(crate) const ZERO: ResourceId = ResourceId(0);
+
+    pub(crate) fn inc(&mut self) { self.0 += 1 }
+}
 
 /// A resource which can be managed by the reactor.
 pub trait Resource: AsRawFd + WriteAtomic + Send {

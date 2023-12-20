@@ -50,7 +50,7 @@ impl Poller {
         Self {
             poll: popol::Sources::new(),
             events: empty!(),
-            id_top: 0,
+            id_top: ResourceId::ZERO,
         }
     }
 
@@ -60,7 +60,7 @@ impl Poller {
         Self {
             poll: popol::Sources::with_capacity(capacity),
             events: VecDeque::with_capacity(capacity),
-            id_top: 0,
+            id_top: ResourceId::ZERO,
         }
     }
 }
@@ -70,7 +70,7 @@ impl Poll for Poller {
 
     fn register(&mut self, fd: &impl AsRawFd, interest: IoType) -> ResourceId {
         let id = self.id_top;
-        self.id_top += 1;
+        self.id_top.inc();
 
         #[cfg(feature = "log")]
         log::trace!(target: "popol", "Registering file descriptor {} as resource with id {}", fd.as_raw_fd(), id);
