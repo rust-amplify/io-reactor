@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{io, thread};
@@ -156,6 +156,14 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
         time: Timestamp,
     );
 
+    /// Method called by the reactor when a given resource was successfully registered and provided
+    /// with a resource id.
+    ///
+    /// The resource id will be used later in [`Self::handle_listener_event`],
+    /// [`Self::handle_transport_event`], [`Self::handover_listener`] and [`handover_transport`]
+    /// calls to the handler.
+    fn handle_registered(&mut self, fd: RawFd, id: ResourceId);
+
     /// Method called by the reactor when a [`Self::Command`] is received for the [`Handler`].
     ///
     /// The commands are sent via [`Controller`] from outside of the reactor, including other
@@ -173,14 +181,14 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     /// Passes the listener resource to the [`Handler`] when it is already not a part of the reactor
     /// poll. From this point of time it is safe to send the resource to other threads (like
     /// workers) or close the resource.
-    fn handover_listener(&mut self, listener: Self::Listener);
+    fn handover_listener(&mut self, id: ResourceId, listener: Self::Listener);
 
     /// Method called by the reactor upon receiving [`Action::UnregisterTransport`].
     ///
     /// Passes the transport resource to the [`Handler`] when it is already not a part of the
     /// reactor poll. From this point of time it is safe to send the resource to other threads
     /// (like workers) or close the resource.
-    fn handover_transport(&mut self, transport: Self::Transport);
+    fn handover_transport(&mut self, id: ResourceId, transport: Self::Transport);
 }
 
 /// High-level reactor API wrapping reactor [`Runtime`] into a thread and providing basic thread
@@ -619,6 +627,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
                 let id = self.poller.register(&listener, IoType::read_only());
                 self.listeners.insert(id, listener);
+                self.service.handle_registered(fd, id);
             }
             Action::RegisterTransport(transport) => {
                 let fd = transport.as_raw_fd();
@@ -628,6 +637,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
                 let id = self.poller.register(&transport, IoType::read_only());
                 self.transports.insert(id, transport);
+                self.service.handle_registered(fd, id);
             }
             Action::UnregisterListener(id) => {
                 let Some(listener) = self.unregister_listener(id) else {
@@ -635,7 +645,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 };
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Handling over listener {id}");
-                self.service.handover_listener(listener);
+                self.service.handover_listener(id, listener);
             }
             Action::UnregisterTransport(id) => {
                 let Some(transport) = self.unregister_transport(id) else {
@@ -643,7 +653,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 };
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Handling over transport {id}");
-                self.service.handover_transport(transport);
+                self.service.handover_transport(id, transport);
             }
             Action::Send(id, data) => {
                 #[cfg(feature = "log")]
@@ -815,6 +825,7 @@ mod test {
             ) {
                 unreachable!()
             }
+            fn handle_registered(&mut self, _fd: RawFd, _id: ResourceId) {}
             fn handle_command(&mut self, cmd: Self::Command) {
                 match cmd {
                     Cmd::Init => {
@@ -829,8 +840,12 @@ mod test {
             fn handle_error(&mut self, err: Error<Self::Listener, Self::Transport>) {
                 panic!("{err}")
             }
-            fn handover_listener(&mut self, _listener: Self::Listener) { unreachable!() }
-            fn handover_transport(&mut self, _transport: Self::Transport) { unreachable!() }
+            fn handover_listener(&mut self, _id: ResourceId, _listener: Self::Listener) {
+                unreachable!()
+            }
+            fn handover_transport(&mut self, _id: ResourceId, _transport: Self::Transport) {
+                unreachable!()
+            }
         }
 
         let reactor = Reactor::new(DumbService::default(), poller::popol::Poller::new()).unwrap();
