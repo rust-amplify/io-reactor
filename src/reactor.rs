@@ -740,7 +740,6 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 #[cfg(test)]
 mod test {
     use std::io::stdout;
-    use std::os::fd::RawFd;
     use std::thread::sleep;
 
     use super::*;
