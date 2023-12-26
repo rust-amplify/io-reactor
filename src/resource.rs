@@ -44,6 +44,7 @@ pub enum Io {
 #[display(inner)]
 pub struct ResourceId(u64);
 
+#[allow(dead_code)] // We need this before we've got non-popol implementations
 impl ResourceId {
     pub(crate) const ZERO: ResourceId = ResourceId(0);
 
