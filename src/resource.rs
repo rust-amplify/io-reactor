@@ -38,6 +38,8 @@ pub enum Io {
     Write,
 }
 
+/// Generator for the new [`ResourceId`]s which should be used by pollers implementing [`Poll`]
+/// trait.
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display)]
 #[display(inner)]
 pub struct ResourceIdGenerator(u64);
@@ -48,6 +50,7 @@ impl Default for ResourceIdGenerator {
 
 #[allow(dead_code)] // We need this before we've got non-popol implementations
 impl ResourceIdGenerator {
+    /// Returns the next id for the resource.
     pub fn next(&mut self) -> ResourceId {
         let id = self.0;
         self.0 += 1;
@@ -62,6 +65,7 @@ impl ResourceIdGenerator {
 pub struct ResourceId(u64);
 
 impl ResourceId {
+    /// Resource id for the waker (always zero).
     pub const WAKER: ResourceId = ResourceId(0);
 }
 
