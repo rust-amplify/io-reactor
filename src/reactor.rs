@@ -21,6 +21,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(unused_variables)] // because we need them for feature-gated logger
+
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::os::unix::io::{AsRawFd, RawFd};
