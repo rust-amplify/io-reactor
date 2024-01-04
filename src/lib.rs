@@ -76,7 +76,7 @@ mod reactor;
 mod resource;
 mod timeouts;
 
-pub use resource::{Io, Resource, ResourceId, WriteAtomic, WriteError};
+pub use resource::{Io, Resource, ResourceId, ResourceIdGenerator, WriteAtomic, WriteError};
 pub use timeouts::{Timer, Timestamp};
 
 pub use self::reactor::{Action, Controller, Error, Handler, Reactor, Runtime};

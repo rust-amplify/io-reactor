@@ -154,6 +154,8 @@ where
     /// Waker type used by the poll provider.
     type Waker: Waker;
 
+    /// Registers a waker object.
+    fn register_waker(&mut self, fd: &impl AsRawFd);
     /// Registers a file-descriptor based resource for a poll.
     fn register(&mut self, fd: &impl AsRawFd, interest: IoType) -> ResourceId;
     /// Unregisters a file-descriptor based resource from a poll.

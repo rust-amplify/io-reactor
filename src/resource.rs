@@ -38,17 +38,31 @@ pub enum Io {
     Write,
 }
 
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display)]
+#[display(inner)]
+pub struct ResourceIdGenerator(u64);
+
+impl Default for ResourceIdGenerator {
+    fn default() -> Self { ResourceIdGenerator(1) }
+}
+
+#[allow(dead_code)] // We need this before we've got non-popol implementations
+impl ResourceIdGenerator {
+    pub fn next(&mut self) -> ResourceId {
+        let id = self.0;
+        self.0 += 1;
+        ResourceId(id)
+    }
+}
+
 /// The resource identifier must be globally unique and non-reusable object. Because of this,
 /// things like [`RawFd`] and socket addresses can't operate like resource identifiers.
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display)]
 #[display(inner)]
 pub struct ResourceId(u64);
 
-#[allow(dead_code)] // We need this before we've got non-popol implementations
 impl ResourceId {
-    pub(crate) const ZERO: ResourceId = ResourceId(0);
-
-    pub(crate) fn inc(&mut self) { self.0 += 1 }
+    pub const WAKER: ResourceId = ResourceId(0);
 }
 
 /// A resource which can be managed by the reactor.

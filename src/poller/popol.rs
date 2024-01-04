@@ -30,14 +30,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::poller::{IoFail, IoType, Poll, Waker, WakerRecv, WakerSend};
-use crate::ResourceId;
+use crate::{ResourceId, ResourceIdGenerator};
 
 /// Manager for a set of reactor which are polled for an event loop by the
 /// re-actor by using [`popol`] library.
 pub struct Poller {
     poll: popol::Sources<ResourceId>,
     events: VecDeque<popol::Event<ResourceId>>,
-    id_top: ResourceId,
+    id_gen: ResourceIdGenerator,
 }
 
 impl Default for Poller {
@@ -50,7 +50,7 @@ impl Poller {
         Self {
             poll: popol::Sources::new(),
             events: empty!(),
-            id_top: ResourceId::ZERO,
+            id_gen: ResourceIdGenerator::default(),
         }
     }
 
@@ -60,7 +60,7 @@ impl Poller {
         Self {
             poll: popol::Sources::with_capacity(capacity),
             events: VecDeque::with_capacity(capacity),
-            id_top: ResourceId::ZERO,
+            id_gen: ResourceIdGenerator::default(),
         }
     }
 }
@@ -68,9 +68,19 @@ impl Poller {
 impl Poll for Poller {
     type Waker = PopolWaker;
 
+    fn register_waker(&mut self, fd: &impl AsRawFd) {
+        let id = ResourceId::WAKER;
+        if self.poll.get(&id).is_some() {
+            #[cfg(feature = "log")]
+            log::error!(target: "popol", "Reactor waker is already registered, terminating");
+            panic!("Reactor waker is already registered");
+        }
+
+        self.poll.register(id, fd, popol::interest::READ);
+    }
+
     fn register(&mut self, fd: &impl AsRawFd, interest: IoType) -> ResourceId {
-        let id = self.id_top;
-        self.id_top.inc();
+        let id = self.id_gen.next();
 
         #[cfg(feature = "log")]
         log::trace!(target: "popol", "Registering file descriptor {} as resource with id {}", fd.as_raw_fd(), id);

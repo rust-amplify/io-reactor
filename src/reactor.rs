@@ -279,7 +279,7 @@ impl<C, P: Poll> Reactor<C, P> {
         let thread = builder.spawn(move || {
             #[cfg(feature = "log")]
             log::debug!(target: "reactor", "Registering waker (fd {})", waker_reader.as_raw_fd());
-            let waker_id = poller.register(&waker_reader, IoType::read_only());
+            poller.register_waker(&waker_reader);
 
             let runtime = Runtime {
                 service,
@@ -289,7 +289,6 @@ impl<C, P: Poll> Reactor<C, P> {
                 listeners: empty!(),
                 transports: empty!(),
                 waker: waker_reader,
-                waker_id,
                 timeouts: Timer::new(),
             };
 
@@ -400,7 +399,6 @@ pub struct Runtime<H: Handler, P: Poll> {
     listeners: HashMap<ResourceId, H::Listener>,
     transports: HashMap<ResourceId, H::Transport>,
     waker: <P::Waker as Waker>::Recv,
-    waker_id: ResourceId,
     timeouts: Timer,
 }
 
@@ -414,7 +412,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
         #[cfg(feature = "log")]
         log::debug!(target: "reactor", "Registering waker (fd {})", waker_reader.as_raw_fd());
-        let waker_id = poller.register(&waker_reader, IoType::read_only());
+        poller.register_waker(&waker_reader);
 
         let controller = Controller {
             ctl_send,
@@ -429,7 +427,6 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             listeners: empty!(),
             transports: empty!(),
             waker: waker_reader,
-            waker_id,
             timeouts: Timer::new(),
         })
     }
@@ -512,7 +509,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
         let mut unregister_queue = vec![];
         while let Some((id, res)) = self.poller.next() {
-            if id == self.waker_id {
+            if id == ResourceId::WAKER {
                 if let Err(err) = res {
                     #[cfg(feature = "log")]
                     log::error!(target: "reactor", "Polling waker has failed: {err}");
