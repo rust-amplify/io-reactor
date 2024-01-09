@@ -21,12 +21,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::hash::Hash;
-use std::io::ErrorKind;
+use std::io::{self, ErrorKind};
 use std::os::unix::io::AsRawFd;
-use std::os::unix::prelude::RawFd;
-use std::{io, net};
 
 use crate::poller::IoType;
 
@@ -40,19 +38,43 @@ pub enum Io {
     Write,
 }
 
-/// Marker traits for types which can be used as a reactor-managed [`Resource`] identifiers.
-pub trait ResourceId: Copy + Eq + Ord + Hash + Send + Debug + Display {}
+/// Generator for the new [`ResourceId`]s which should be used by pollers implementing [`Poll`]
+/// trait.
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display)]
+#[display(inner)]
+pub struct ResourceIdGenerator(u64);
+
+impl Default for ResourceIdGenerator {
+    fn default() -> Self { ResourceIdGenerator(1) }
+}
+
+#[allow(dead_code)] // We need this before we've got non-popol implementations
+impl ResourceIdGenerator {
+    /// Returns the next id for the resource.
+    pub fn next(&mut self) -> ResourceId {
+        let id = self.0;
+        self.0 += 1;
+        ResourceId(id)
+    }
+}
+
+/// The resource identifier must be globally unique and non-reusable object. Because of this,
+/// things like [`RawFd`] and socket addresses can't operate like resource identifiers.
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display)]
+#[display(inner)]
+pub struct ResourceId(u64);
+
+impl ResourceId {
+    /// Resource id for the waker (always zero).
+    pub const WAKER: ResourceId = ResourceId(0);
+}
 
 /// A resource which can be managed by the reactor.
 pub trait Resource: AsRawFd + WriteAtomic + Send {
-    /// Resource identifier type.
-    type Id: ResourceId;
     /// Events which resource may generate upon receiving I/O from the reactor via
     /// [`Self::handle_io`]. These events are passed to the reactor [`crate::Handler`].
     type Event;
 
-    /// Method returning the [`ResourceId`].
-    fn id(&self) -> Self::Id;
     /// Method informing the reactor which types of events this resource is subscribed for.
     fn interests(&self) -> IoType;
 
@@ -60,9 +82,6 @@ pub trait Resource: AsRawFd + WriteAtomic + Send {
     /// poll syscall.
     fn handle_io(&mut self, io: Io) -> Option<Self::Event>;
 }
-
-impl ResourceId for net::SocketAddr {}
-impl ResourceId for RawFd {}
 
 /// Error during write operation for a reactor-managed [`Resource`].
 #[derive(Debug, Display, Error, From)]

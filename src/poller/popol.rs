@@ -30,12 +30,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::poller::{IoFail, IoType, Poll, Waker, WakerRecv, WakerSend};
+use crate::{ResourceId, ResourceIdGenerator};
 
 /// Manager for a set of reactor which are polled for an event loop by the
 /// re-actor by using [`popol`] library.
 pub struct Poller {
-    poll: popol::Sources<RawFd>,
-    events: VecDeque<popol::Event<RawFd>>,
+    poll: popol::Sources<ResourceId>,
+    events: VecDeque<popol::Event<ResourceId>>,
+    id_gen: ResourceIdGenerator,
 }
 
 impl Default for Poller {
@@ -48,6 +50,7 @@ impl Poller {
         Self {
             poll: popol::Sources::new(),
             events: empty!(),
+            id_gen: ResourceIdGenerator::default(),
         }
     }
 
@@ -57,6 +60,7 @@ impl Poller {
         Self {
             poll: popol::Sources::with_capacity(capacity),
             events: VecDeque::with_capacity(capacity),
+            id_gen: ResourceIdGenerator::default(),
         }
     }
 }
@@ -64,26 +68,39 @@ impl Poller {
 impl Poll for Poller {
     type Waker = PopolWaker;
 
-    fn register(&mut self, fd: &impl AsRawFd, interest: IoType) {
-        #[cfg(feature = "log")]
-        log::trace!(target: "popol", "Registering {}", fd.as_raw_fd());
-        self.poll.register(fd.as_raw_fd(), fd, interest.into());
+    fn register_waker(&mut self, fd: &impl AsRawFd) {
+        let id = ResourceId::WAKER;
+        if self.poll.get(&id).is_some() {
+            #[cfg(feature = "log")]
+            log::error!(target: "popol", "Reactor waker is already registered, terminating");
+            panic!("Reactor waker is already registered");
+        }
+
+        self.poll.register(id, fd, popol::interest::READ);
     }
 
-    fn unregister(&mut self, fd: &impl AsRawFd) {
+    fn register(&mut self, fd: &impl AsRawFd, interest: IoType) -> ResourceId {
+        let id = self.id_gen.next();
+
         #[cfg(feature = "log")]
-        log::trace!(target: "popol", "Unregistering {}", fd.as_raw_fd());
-        self.poll.unregister(&fd.as_raw_fd());
+        log::trace!(target: "popol", "Registering file descriptor {} as resource with id {}", fd.as_raw_fd(), id);
+
+        self.poll.register(id, fd, interest.into());
+        id
     }
 
-    fn set_interest(&mut self, fd: &impl AsRawFd, interest: IoType) -> bool {
-        let fd = fd.as_raw_fd();
-
+    fn unregister(&mut self, id: ResourceId) {
         #[cfg(feature = "log")]
-        log::trace!(target: "popol", "Setting interest `{interest}` on {}", fd);
+        log::trace!(target: "popol", "Unregistering {}", id);
+        self.poll.unregister(&id);
+    }
 
-        self.poll.unset(&fd, (!interest).into());
-        self.poll.set(&fd, interest.into())
+    fn set_interest(&mut self, id: ResourceId, interest: IoType) -> bool {
+        #[cfg(feature = "log")]
+        log::trace!(target: "popol", "Setting interest `{interest}` on {}", id);
+
+        self.poll.unset(&id, (!interest).into());
+        self.poll.set(&id, interest.into())
     }
 
     fn poll(&mut self, timeout: Option<Duration>) -> io::Result<usize> {
@@ -115,21 +132,21 @@ impl Poll for Poller {
 }
 
 impl Iterator for Poller {
-    type Item = (RawFd, Result<IoType, IoFail>);
+    type Item = (ResourceId, Result<IoType, IoFail>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let event = self.events.pop_front()?;
 
-        let fd = event.key;
+        let id = event.key;
         let fired = event.raw_events();
         let res = if event.is_hangup() {
             #[cfg(feature = "log")]
-            log::trace!(target: "popol", "Hangup on {fd}");
+            log::trace!(target: "popol", "Hangup on {id}");
 
             Err(IoFail::Connectivity(fired))
         } else if event.is_error() || event.is_invalid() {
             #[cfg(feature = "log")]
-            log::trace!(target: "popol", "OS error on {fd} (fired events {fired:#b})");
+            log::trace!(target: "popol", "OS error on {id} (fired events {fired:#b})");
 
             Err(IoFail::Os(fired))
         } else {
@@ -139,11 +156,11 @@ impl Iterator for Poller {
             };
 
             #[cfg(feature = "log")]
-            log::trace!(target: "popol", "I/O event on {fd}: {io}");
+            log::trace!(target: "popol", "I/O event on {id}: {io}");
 
             Ok(io)
         };
-        Some((fd, res))
+        Some((id, res))
     }
 }
 

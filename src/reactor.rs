@@ -21,6 +21,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(unused_variables)] // because we need them for feature-gated logger
+
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -32,7 +34,7 @@ use crossbeam_channel as chan;
 
 use crate::poller::{IoFail, IoType, Poll, Waker, WakerRecv, WakerSend};
 use crate::resource::WriteError;
-use crate::{Resource, Timer, Timestamp, WriteAtomic};
+use crate::{Resource, ResourceId, Timer, Timestamp, WriteAtomic};
 
 /// Maximum amount of time to wait for I/O.
 const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -42,10 +44,10 @@ const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 #[display(doc_comments)]
 pub enum Error<L: Resource, T: Resource> {
     /// transport {0} got disconnected during poll operation.
-    ListenerDisconnect(L::Id, L),
+    ListenerDisconnect(ResourceId, L),
 
     /// transport {0} got disconnected during poll operation.
-    TransportDisconnect(T::Id, T),
+    TransportDisconnect(ResourceId, T),
 
     /// polling multiple reactor has failed. Details: {0:?}
     Poll(io::Error),
@@ -81,7 +83,7 @@ pub enum Action<L: Resource, T: Resource> {
     /// closed, listener is not unbound, connections are not closed etc. All these actions must be
     /// handled by the handler upon the handover event.
     #[display("unregister_listener")]
-    UnregisterListener(L::Id),
+    UnregisterListener(ResourceId),
 
     /// Unregister transport resource from the reactor poll and handover it to the [`Handler`] via
     /// [`Handler::handover_transport`].
@@ -90,11 +92,11 @@ pub enum Action<L: Resource, T: Resource> {
     /// closed, listener is not unbound, connections are not closed etc. All these actions must be
     /// handled by the handler upon the handover event.
     #[display("unregister_transport")]
-    UnregisterTransport(T::Id),
+    UnregisterTransport(ResourceId),
 
     /// Write the data to one of the transport resources using [`io::Write`].
     #[display("send_to({0})")]
-    Send(T::Id, Vec<u8>),
+    Send(ResourceId, Vec<u8>),
 
     /// Set a new timer for a given duration from this moment.
     ///
@@ -143,7 +145,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     /// resource can be spawned from the listener).
     fn handle_listener_event(
         &mut self,
-        id: <Self::Listener as Resource>::Id,
+        id: ResourceId,
         event: <Self::Listener as Resource>::Event,
         time: Timestamp,
     );
@@ -151,10 +153,18 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     /// Method called by the reactor upon I/O event on a transport resource.
     fn handle_transport_event(
         &mut self,
-        id: <Self::Transport as Resource>::Id,
+        id: ResourceId,
         event: <Self::Transport as Resource>::Event,
         time: Timestamp,
     );
+
+    /// Method called by the reactor when a given resource was successfully registered and provided
+    /// with a resource id.
+    ///
+    /// The resource id will be used later in [`Self::handle_listener_event`],
+    /// [`Self::handle_transport_event`], [`Self::handover_listener`] and [`handover_transport`]
+    /// calls to the handler.
+    fn handle_registered(&mut self, fd: RawFd, id: ResourceId);
 
     /// Method called by the reactor when a [`Self::Command`] is received for the [`Handler`].
     ///
@@ -173,14 +183,14 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     /// Passes the listener resource to the [`Handler`] when it is already not a part of the reactor
     /// poll. From this point of time it is safe to send the resource to other threads (like
     /// workers) or close the resource.
-    fn handover_listener(&mut self, listener: Self::Listener);
+    fn handover_listener(&mut self, id: ResourceId, listener: Self::Listener);
 
     /// Method called by the reactor upon receiving [`Action::UnregisterTransport`].
     ///
     /// Passes the transport resource to the [`Handler`] when it is already not a part of the
     /// reactor poll. From this point of time it is safe to send the resource to other threads
     /// (like workers) or close the resource.
-    fn handover_transport(&mut self, transport: Self::Transport);
+    fn handover_transport(&mut self, id: ResourceId, transport: Self::Transport);
 }
 
 /// High-level reactor API wrapping reactor [`Runtime`] into a thread and providing basic thread
@@ -271,7 +281,7 @@ impl<C, P: Poll> Reactor<C, P> {
         let thread = builder.spawn(move || {
             #[cfg(feature = "log")]
             log::debug!(target: "reactor", "Registering waker (fd {})", waker_reader.as_raw_fd());
-            poller.register(&waker_reader, IoType::read_only());
+            poller.register_waker(&waker_reader);
 
             let runtime = Runtime {
                 service,
@@ -280,8 +290,6 @@ impl<C, P: Poll> Reactor<C, P> {
                 ctl_recv,
                 listeners: empty!(),
                 transports: empty!(),
-                listener_map: empty!(),
-                transport_map: empty!(),
                 waker: waker_reader,
                 timeouts: Timer::new(),
             };
@@ -390,10 +398,8 @@ pub struct Runtime<H: Handler, P: Poll> {
     poller: P,
     controller: Controller<H::Command, <P::Waker as Waker>::Send>,
     ctl_recv: chan::Receiver<Ctl<H::Command>>,
-    listener_map: HashMap<RawFd, <H::Listener as Resource>::Id>,
-    transport_map: HashMap<RawFd, <H::Transport as Resource>::Id>,
-    listeners: HashMap<<H::Listener as Resource>::Id, H::Listener>,
-    transports: HashMap<<H::Transport as Resource>::Id, H::Transport>,
+    listeners: HashMap<ResourceId, H::Listener>,
+    transports: HashMap<ResourceId, H::Transport>,
     waker: <P::Waker as Waker>::Recv,
     timeouts: Timer,
 }
@@ -401,10 +407,14 @@ pub struct Runtime<H: Handler, P: Poll> {
 impl<H: Handler, P: Poll> Runtime<H, P> {
     /// Creates new reactor runtime using provided [`Poll`] engine and a service exposing
     /// [`Handler`] API to the reactor.
-    pub fn with(service: H, poller: P) -> io::Result<Self> {
+    pub fn with(service: H, mut poller: P) -> io::Result<Self> {
         let (ctl_send, ctl_recv) = chan::unbounded();
 
         let (waker_writer, waker_reader) = P::Waker::pair()?;
+
+        #[cfg(feature = "log")]
+        log::debug!(target: "reactor", "Registering waker (fd {})", waker_reader.as_raw_fd());
+        poller.register_waker(&waker_reader);
 
         let controller = Controller {
             ctl_send,
@@ -418,8 +428,6 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             ctl_recv,
             listeners: empty!(),
             transports: empty!(),
-            listener_map: empty!(),
-            transport_map: empty!(),
             waker: waker_reader,
             timeouts: Timer::new(),
         })
@@ -438,11 +446,11 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             let before_poll = Timestamp::now();
             let timeout = self.timeouts.next(before_poll).unwrap_or(WAIT_TIMEOUT);
 
-            for res in self.listeners.values() {
-                self.poller.set_interest(res, res.interests());
+            for (id, res) in &self.listeners {
+                self.poller.set_interest(*id, res.interests());
             }
-            for res in self.transports.values() {
-                self.poller.set_interest(res, res.interests());
+            for (id, res) in &self.transports {
+                self.poller.set_interest(*id, res.interests());
             }
 
             // Blocking
@@ -502,8 +510,8 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         let mut awoken = false;
 
         let mut unregister_queue = vec![];
-        while let Some((fd, res)) = self.poller.next() {
-            if fd == self.waker.as_raw_fd() {
+        while let Some((id, res)) = self.poller.next() {
+            if id == ResourceId::WAKER {
                 if let Err(err) = res {
                     #[cfg(feature = "log")]
                     log::error!(target: "reactor", "Polling waker has failed: {err}");
@@ -515,16 +523,16 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
                 self.waker.reset();
                 awoken = true;
-            } else if let Some(id) = self.listener_map.get(&fd) {
+            } else if self.listeners.contains_key(&id) {
                 match res {
                     Ok(io) => {
                         #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Got `{io}` event from listener {id} (fd={fd})");
+                        log::trace!(target: "reactor", "Got `{io}` event from listener {id}");
 
-                        let listener = self.listeners.get_mut(id).expect("resource disappeared");
+                        let listener = self.listeners.get_mut(&id).expect("resource disappeared");
                         for io in io {
                             if let Some(event) = listener.handle_io(io) {
-                                self.service.handle_listener_event(*id, event, time);
+                                self.service.handle_listener_event(id, event, time);
                             }
                         }
                     }
@@ -532,26 +540,26 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Listener {id} hung up (OS flags {flags:#b})");
 
-                        let listener = self.listeners.remove(id).expect("resource disappeared");
-                        unregister_queue.push(listener.as_raw_fd());
-                        self.service.handle_error(Error::ListenerDisconnect(*id, listener));
+                        let listener = self.listeners.remove(&id).expect("resource disappeared");
+                        unregister_queue.push(id);
+                        self.service.handle_error(Error::ListenerDisconnect(id, listener));
                     }
                     Err(IoFail::Os(flags)) => {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Listener {id} errored (OS flags {flags:#b})");
-                        self.unregister_listener(*id);
+                        self.unregister_listener(id);
                     }
                 }
-            } else if let Some(id) = self.transport_map.get(&fd) {
+            } else if self.transports.contains_key(&id) {
                 match res {
                     Ok(io) => {
                         #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Got `{io}` event from transport {id} (fd={fd})");
+                        log::trace!(target: "reactor", "Got `{io}` event from transport {id}");
 
-                        let transport = self.transports.get_mut(id).expect("resource disappeared");
+                        let transport = self.transports.get_mut(&id).expect("resource disappeared");
                         for io in io {
                             if let Some(event) = transport.handle_io(io) {
-                                self.service.handle_transport_event(*id, event, time);
+                                self.service.handle_transport_event(id, event, time);
                             }
                         }
                     }
@@ -559,14 +567,14 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Transport {id} hanged up (POSIX events are {posix_events:#b})");
 
-                        let transport = self.transports.remove(id).expect("resource disappeared");
-                        unregister_queue.push(transport.as_raw_fd());
-                        self.service.handle_error(Error::TransportDisconnect(*id, transport));
+                        let transport = self.transports.remove(&id).expect("resource disappeared");
+                        unregister_queue.push(id);
+                        self.service.handle_error(Error::TransportDisconnect(id, transport));
                     }
                     Err(IoFail::Os(posix_events)) => {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Transport {id} errored (POSIX events are {posix_events:#b})");
-                        self.unregister_transport(*id);
+                        self.unregister_transport(id);
                     }
                 }
             } else {
@@ -577,8 +585,8 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         }
 
         // We need this b/c of borrow checker
-        for fd in unregister_queue {
-            self.poller.unregister(&fd);
+        for id in unregister_queue {
+            self.poller.unregister(id);
         }
 
         awoken
@@ -611,42 +619,40 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     ) -> Result<(), Error<H::Listener, H::Transport>> {
         match action {
             Action::RegisterListener(listener) => {
-                let id = listener.id();
                 let fd = listener.as_raw_fd();
 
                 #[cfg(feature = "log")]
-                log::debug!(target: "reactor", "Registering listener on {id} (fd={fd})");
+                log::debug!(target: "reactor", "Registering listener with fd={fd}");
 
-                self.poller.register(&listener, IoType::read_only());
+                let id = self.poller.register(&listener, IoType::read_only());
                 self.listeners.insert(id, listener);
-                self.listener_map.insert(fd, id);
+                self.service.handle_registered(fd, id);
             }
             Action::RegisterTransport(transport) => {
-                let id = transport.id();
                 let fd = transport.as_raw_fd();
 
                 #[cfg(feature = "log")]
-                log::debug!(target: "reactor", "Registering transport on {id} (fd={fd})");
+                log::debug!(target: "reactor", "Registering transport with fd={fd}");
 
-                self.poller.register(&transport, IoType::read_only());
+                let id = self.poller.register(&transport, IoType::read_only());
                 self.transports.insert(id, transport);
-                self.transport_map.insert(fd, id);
+                self.service.handle_registered(fd, id);
             }
             Action::UnregisterListener(id) => {
                 let Some(listener) = self.unregister_listener(id) else {
-                    return Ok(())
+                    return Ok(());
                 };
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Handling over listener {id}");
-                self.service.handover_listener(listener);
+                self.service.handover_listener(id, listener);
             }
             Action::UnregisterTransport(id) => {
                 let Some(transport) = self.unregister_transport(id) else {
-                    return Ok(())
+                    return Ok(());
                 };
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Handling over transport {id}");
-                self.service.handover_transport(transport);
+                self.service.handover_transport(id, transport);
             }
             Action::Send(id, data) => {
                 #[cfg(feature = "log")]
@@ -656,7 +662,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     #[cfg(feature = "log")]
                     log::error!(target: "reactor", "Transport {id} is not in the reactor");
 
-                    return Ok(())
+                    return Ok(());
                 };
                 match transport.write_atomic(&data) {
                     Err(WriteError::NotReady) => {
@@ -695,11 +701,11 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         // We just drop here?
     }
 
-    fn unregister_listener(&mut self, id: <H::Listener as Resource>::Id) -> Option<H::Listener> {
+    fn unregister_listener(&mut self, id: ResourceId) -> Option<H::Listener> {
         let Some(listener) = self.listeners.remove(&id) else {
             #[cfg(feature = "log")]
             log::warn!(target: "reactor", "Unregistering non-registered listener {id}");
-            return None
+            return None;
         };
 
         let fd = listener.as_raw_fd();
@@ -707,19 +713,16 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         #[cfg(feature = "log")]
         log::debug!(target: "reactor", "Handling over listener {id} (fd={fd})");
 
-        self.listener_map
-            .remove(&fd)
-            .expect("listener index content doesn't match registered listeners");
-        self.poller.unregister(&listener);
+        self.poller.unregister(id);
 
         Some(listener)
     }
 
-    fn unregister_transport(&mut self, id: <H::Transport as Resource>::Id) -> Option<H::Transport> {
+    fn unregister_transport(&mut self, id: ResourceId) -> Option<H::Transport> {
         let Some(transport) = self.transports.remove(&id) else {
             #[cfg(feature = "log")]
             log::warn!(target: "reactor", "Unregistering non-registered transport {id}");
-            return None
+            return None;
         };
 
         let fd = transport.as_raw_fd();
@@ -727,10 +730,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         #[cfg(feature = "log")]
         log::debug!(target: "reactor", "Unregistering over transport {id} (fd={fd})");
 
-        self.transport_map
-            .remove(&fd)
-            .expect("transport index content doesn't match registered transports");
-        self.poller.unregister(&transport);
+        self.poller.unregister(id);
 
         Some(transport)
     }
@@ -761,9 +761,7 @@ mod test {
         fn write_or_buf(&mut self, _buf: &[u8]) -> io::Result<()> { Ok(()) }
     }
     impl Resource for DumbRes {
-        type Id = RawFd;
         type Event = ();
-        fn id(&self) -> Self::Id { self.0.as_raw_fd() }
         fn interests(&self) -> IoType { IoType::read_write() }
         fn handle_io(&mut self, _io: Io) -> Option<Self::Event> { None }
     }
@@ -811,7 +809,7 @@ mod test {
             }
             fn handle_listener_event(
                 &mut self,
-                _d: <Self::Listener as Resource>::Id,
+                _d: ResourceId,
                 _event: <Self::Listener as Resource>::Event,
                 _time: Timestamp,
             ) {
@@ -819,12 +817,13 @@ mod test {
             }
             fn handle_transport_event(
                 &mut self,
-                _id: <Self::Transport as Resource>::Id,
+                _id: ResourceId,
                 _event: <Self::Transport as Resource>::Event,
                 _time: Timestamp,
             ) {
                 unreachable!()
             }
+            fn handle_registered(&mut self, _fd: RawFd, _id: ResourceId) {}
             fn handle_command(&mut self, cmd: Self::Command) {
                 match cmd {
                     Cmd::Init => {
@@ -839,8 +838,12 @@ mod test {
             fn handle_error(&mut self, err: Error<Self::Listener, Self::Transport>) {
                 panic!("{err}")
             }
-            fn handover_listener(&mut self, _listener: Self::Listener) { unreachable!() }
-            fn handover_transport(&mut self, _transport: Self::Transport) { unreachable!() }
+            fn handover_listener(&mut self, _id: ResourceId, _listener: Self::Listener) {
+                unreachable!()
+            }
+            fn handover_transport(&mut self, _id: ResourceId, _transport: Self::Transport) {
+                unreachable!()
+            }
         }
 
         let reactor = Reactor::new(DumbService::default(), poller::popol::Poller::new()).unwrap();
