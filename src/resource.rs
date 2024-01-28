@@ -38,6 +38,15 @@ pub enum Io {
     Write,
 }
 
+/// Type of the resource.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub enum ResourceType {
+    /// Listener resource.
+    Listener,
+    /// Transport resource.
+    Transport,
+}
+
 /// Generator for the new [`ResourceId`]s which should be used by pollers implementing [`Poll`]
 /// trait.
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display)]
