@@ -34,7 +34,7 @@ use crossbeam_channel as chan;
 
 use crate::poller::{IoFail, IoType, Poll, Waker, WakerRecv, WakerSend};
 use crate::resource::WriteError;
-use crate::{Resource, ResourceId, Timer, Timestamp, WriteAtomic};
+use crate::{Resource, ResourceId, ResourceType, Timer, Timestamp, WriteAtomic};
 
 /// Maximum amount of time to wait for I/O.
 const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -164,7 +164,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     /// The resource id will be used later in [`Self::handle_listener_event`],
     /// [`Self::handle_transport_event`], [`Self::handover_listener`] and [`handover_transport`]
     /// calls to the handler.
-    fn handle_registered(&mut self, fd: RawFd, id: ResourceId);
+    fn handle_registered(&mut self, fd: RawFd, id: ResourceId, ty: ResourceType);
 
     /// Method called by the reactor when a [`Self::Command`] is received for the [`Handler`].
     ///
@@ -626,7 +626,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
                 let id = self.poller.register(&listener, IoType::read_only());
                 self.listeners.insert(id, listener);
-                self.service.handle_registered(fd, id);
+                self.service.handle_registered(fd, id, ResourceType::Listener);
             }
             Action::RegisterTransport(transport) => {
                 let fd = transport.as_raw_fd();
@@ -636,7 +636,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
                 let id = self.poller.register(&transport, IoType::read_only());
                 self.transports.insert(id, transport);
-                self.service.handle_registered(fd, id);
+                self.service.handle_registered(fd, id, ResourceType::Transport);
             }
             Action::UnregisterListener(id) => {
                 let Some(listener) = self.unregister_listener(id) else {
@@ -823,7 +823,7 @@ mod test {
             ) {
                 unreachable!()
             }
-            fn handle_registered(&mut self, _fd: RawFd, _id: ResourceId) {}
+            fn handle_registered(&mut self, _fd: RawFd, _id: ResourceId, _ty: ResourceType) {}
             fn handle_command(&mut self, cmd: Self::Command) {
                 match cmd {
                     Cmd::Init => {
