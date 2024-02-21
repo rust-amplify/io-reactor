@@ -444,7 +444,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     fn run(mut self) {
         loop {
             let before_poll = Timestamp::now();
-            let timeout = self.timeouts.next(before_poll).unwrap_or(WAIT_TIMEOUT);
+            let timeout = self.timeouts.next_expiring_from(before_poll).unwrap_or(WAIT_TIMEOUT);
 
             for (id, res) in &self.listeners {
                 self.poller.set_interest(*id, res.interests());
@@ -463,7 +463,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
             // Nb. The way this is currently used basically ignores which keys have
             // timed out. So as long as *something* timed out, we wake the service.
-            let timers_fired = self.timeouts.expire(now);
+            let timers_fired = self.timeouts.remove_expired_by(now);
             if timers_fired > 0 {
                 #[cfg(feature = "log")]
                 log::trace!(target: "reactor", "Timer has fired");
@@ -688,7 +688,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Adding timer {duration:?} from now");
 
-                self.timeouts.set_timer(duration, time);
+                self.timeouts.set_timeout(duration, time);
             }
         }
         Ok(())
