@@ -152,7 +152,7 @@ pub trait WriteAtomic: io::Write {
     /// If the buffer contained any data before this operation.
     fn empty_write_buf(&mut self) -> io::Result<bool>;
 
-    #[doc = hidden]
+    #[doc(hidden)]
     /// Writes to the resource in a non-blocking way, buffering the data if necessary - or failing
     /// with a system-level error.
     ///
