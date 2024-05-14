@@ -104,7 +104,7 @@ pub enum WriteError {
     #[display("resource not ready to accept the data")]
     NotReady,
 
-    /// Error returned by the operation system and not by the resource itself.
+    /// Error returned by the operating system and not by the resource itself.
     #[display(inner)]
     #[from]
     Io(io::Error),
