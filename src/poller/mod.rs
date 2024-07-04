@@ -133,9 +133,9 @@ impl Display for IoType {
 #[derive(Copy, Clone, Debug, Display, Error)]
 #[display(doc_comments)]
 pub enum IoFail {
-    /// connection is absent (POSIX events {0:#b})
+    /// hung up (POSIX events {0:#b})
     Connectivity(i16),
-    /// OS-level error (POSIX events {0:#b})
+    /// errored (POSIX events {0:#b})
     Os(i16),
 }
 
