@@ -32,7 +32,7 @@ use std::{io, thread};
 
 use crossbeam_channel as chan;
 
-use crate::poller::{IoFail, IoType, Poll, Waker, WakerRecv, WakerSend};
+use crate::poller::{IoType, Poll, Waker, WakerRecv, WakerSend};
 use crate::resource::WriteError;
 use crate::{Resource, ResourceId, ResourceType, Timer, Timestamp, WriteAtomic};
 
@@ -505,11 +505,10 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
     /// # Returns
     ///
-    /// Whether it was awaken by a waker
+    /// Whether it was awakened by a waker
     fn handle_events(&mut self, time: Timestamp) -> bool {
         let mut awoken = false;
 
-        let mut unregister_queue = vec![];
         while let Some((id, res)) = self.poller.next() {
             if id == ResourceId::WAKER {
                 if let Err(err) = res {
@@ -536,18 +535,12 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                             }
                         }
                     }
-                    Err(IoFail::Connectivity(flags)) => {
+                    Err(err) => {
                         #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Listener {id} hung up (OS flags {flags:#b})");
-
-                        let listener = self.listeners.remove(&id).expect("resource disappeared");
-                        unregister_queue.push(id);
+                        log::trace!(target: "reactor", "Listener {id} {err}");
+                        let listener =
+                            self.unregister_listener(id).expect("listener has disappeared");
                         self.service.handle_error(Error::ListenerDisconnect(id, listener));
-                    }
-                    Err(IoFail::Os(flags)) => {
-                        #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Listener {id} errored (OS flags {flags:#b})");
-                        self.unregister_listener(id);
                     }
                 }
             } else if self.transports.contains_key(&id) {
@@ -563,18 +556,12 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                             }
                         }
                     }
-                    Err(IoFail::Connectivity(posix_events)) => {
+                    Err(err) => {
                         #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Transport {id} hanged up (POSIX events are {posix_events:#b})");
-
-                        let transport = self.transports.remove(&id).expect("resource disappeared");
-                        unregister_queue.push(id);
+                        log::trace!(target: "reactor", "Transport {id} {err}");
+                        let transport =
+                            self.unregister_transport(id).expect("transport has disappeared");
                         self.service.handle_error(Error::TransportDisconnect(id, transport));
-                    }
-                    Err(IoFail::Os(posix_events)) => {
-                        #[cfg(feature = "log")]
-                        log::trace!(target: "reactor", "Transport {id} errored (POSIX events are {posix_events:#b})");
-                        self.unregister_transport(id);
                     }
                 }
             } else {
@@ -582,11 +569,6 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     "file descriptor in reactor which is not a known waker, listener or transport"
                 )
             }
-        }
-
-        // We need this b/c of borrow checker
-        for id in unregister_queue {
-            self.poller.unregister(id);
         }
 
         awoken
@@ -708,10 +690,8 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             return None;
         };
 
-        let fd = listener.as_raw_fd();
-
         #[cfg(feature = "log")]
-        log::debug!(target: "reactor", "Handling over listener {id} (fd={fd})");
+        log::debug!(target: "reactor", "Handling over listener {id} (fd={})", listener.as_raw_fd());
 
         self.poller.unregister(id);
 
@@ -725,10 +705,8 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             return None;
         };
 
-        let fd = transport.as_raw_fd();
-
         #[cfg(feature = "log")]
-        log::debug!(target: "reactor", "Unregistering over transport {id} (fd={fd})");
+        log::debug!(target: "reactor", "Unregistering over transport {id} (fd={})", transport.as_raw_fd());
 
         self.poller.unregister(id);
 
