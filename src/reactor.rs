@@ -120,7 +120,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     /// connections, database connections etc are all fall into this category.
     type Transport: Resource;
 
-    /// A command which may be sent to the [`Handler`] from outside of the [`Reactor`], including
+    /// A command which may be sent to the [`Handler`] from outside the [`Reactor`], including
     /// other threads.
     ///
     /// The handler object is owned by the reactor runtime and executes always in the context of the
@@ -148,6 +148,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
         id: ResourceId,
         event: <Self::Listener as Resource>::Event,
         time: Timestamp,
+        sender: Controller<Self::Command, impl WakerSend>,
     );
 
     /// Method called by the reactor upon I/O event on a transport resource.
@@ -156,6 +157,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
         id: ResourceId,
         event: <Self::Transport as Resource>::Event,
         time: Timestamp,
+        sender: Controller<Self::Command, impl WakerSend>,
     );
 
     /// Method called by the reactor when a given resource was successfully registered and provided
@@ -528,10 +530,11 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Got `{io}` event from listener {id}");
 
+                        let sender = self.controller();
                         let listener = self.listeners.get_mut(&id).expect("resource disappeared");
                         for io in io {
                             if let Some(event) = listener.handle_io(io) {
-                                self.service.handle_listener_event(id, event, time);
+                                self.service.handle_listener_event(id, event, time, sender.clone());
                             }
                         }
                     }
@@ -549,10 +552,12 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         #[cfg(feature = "log")]
                         log::trace!(target: "reactor", "Got `{io}` event from transport {id}");
 
+                        let sender = self.controller();
                         let transport = self.transports.get_mut(&id).expect("resource disappeared");
                         for io in io {
                             if let Some(event) = transport.handle_io(io) {
-                                self.service.handle_transport_event(id, event, time);
+                                let sender = sender.clone();
+                                self.service.handle_transport_event(id, event, time, sender);
                             }
                         }
                     }
@@ -790,6 +795,7 @@ mod test {
                 _d: ResourceId,
                 _event: <Self::Listener as Resource>::Event,
                 _time: Timestamp,
+                _sender: Controller<Cmd, impl WakerSend>,
             ) {
                 unreachable!()
             }
@@ -798,6 +804,7 @@ mod test {
                 _id: ResourceId,
                 _event: <Self::Transport as Resource>::Event,
                 _time: Timestamp,
+                _sender: Controller<Cmd, impl WakerSend>,
             ) {
                 unreachable!()
             }
