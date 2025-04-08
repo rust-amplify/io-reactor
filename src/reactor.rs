@@ -145,6 +145,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     /// resource can be spawned from the listener).
     fn handle_listener_event(
         &mut self,
+        fd: RawFd,
         id: ResourceId,
         event: <Self::Listener as Resource>::Event,
         time: Timestamp,
@@ -153,6 +154,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     /// Method called by the reactor upon I/O event on a transport resource.
     fn handle_transport_event(
         &mut self,
+        fd: RawFd,
         id: ResourceId,
         event: <Self::Transport as Resource>::Event,
         time: Timestamp,
@@ -531,7 +533,8 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         let listener = self.listeners.get_mut(&id).expect("resource disappeared");
                         for io in io {
                             if let Some(event) = listener.handle_io(io) {
-                                self.service.handle_listener_event(id, event, time);
+                                let fd = listener.as_raw_fd();
+                                self.service.handle_listener_event(fd, id, event, time);
                             }
                         }
                     }
@@ -552,7 +555,8 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         let transport = self.transports.get_mut(&id).expect("resource disappeared");
                         for io in io {
                             if let Some(event) = transport.handle_io(io) {
-                                self.service.handle_transport_event(id, event, time);
+                                let fd = transport.as_raw_fd();
+                                self.service.handle_transport_event(fd, id, event, time);
                             }
                         }
                     }
@@ -787,6 +791,7 @@ mod test {
             }
             fn handle_listener_event(
                 &mut self,
+                _fd: RawFd,
                 _d: ResourceId,
                 _event: <Self::Listener as Resource>::Event,
                 _time: Timestamp,
@@ -795,6 +800,7 @@ mod test {
             }
             fn handle_transport_event(
                 &mut self,
+                _fd: RawFd,
                 _id: ResourceId,
                 _event: <Self::Transport as Resource>::Event,
                 _time: Timestamp,
