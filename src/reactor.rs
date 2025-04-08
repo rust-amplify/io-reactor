@@ -103,6 +103,10 @@ pub enum Action<L: Resource, T: Resource> {
     /// When the timer fires reactor will timeout poll syscall and call [`Handler::handle_timer`].
     #[display("set_timer({0:?})")]
     SetTimer(Duration),
+
+    /// Graceffully terminate the reactor.
+    #[display("terminate")]
+    Terminate,
 }
 
 /// A service which handles I/O events generated in the [`Reactor`].
@@ -436,7 +440,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     }
 
     /// Provides a copy of a [`Controller`] object which exposes an API to the reactor and a service
-    /// running inside of its thread.
+    /// running inside its thread.
     ///
     /// See [`Handler::Command`] for the details.
     pub fn controller(&self) -> Controller<H::Command, <P::Waker as Waker>::Send> {
@@ -501,7 +505,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 }
             }
 
-            self.handle_actions(now);
+            if !self.handle_actions(now) {
+                break;
+            };
         }
     }
 
@@ -578,19 +584,30 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         awoken
     }
 
-    fn handle_actions(&mut self, time: Timestamp) {
+    /// Handles the actions from the queue.
+    ///
+    /// # Return
+    ///
+    /// Return value indicates whether the reactor must proceed operating (`true`) or should
+    /// terminate (`false`).
+    fn handle_actions(&mut self, time: Timestamp) -> bool {
+        let mut result = true;
         while let Some(action) = self.service.next() {
             #[cfg(feature = "log")]
             log::trace!(target: "reactor", "Handling action {action} from the service");
 
             // NB: Deadlock may happen here if the service will generate events over and over
             // in the handle_* calls we may never get out of this loop
-            if let Err(err) = self.handle_action(action, time) {
-                #[cfg(feature = "log")]
-                log::error!(target: "reactor", "Error: {err}");
-                self.service.handle_error(err);
+            match self.handle_action(action, time) {
+                Ok(ret) => result |= ret,
+                Err(err) => {
+                    #[cfg(feature = "log")]
+                    log::error!(target: "reactor", "Error: {err}");
+                    self.service.handle_error(err);
+                }
             }
         }
+        return result;
     }
 
     /// # Safety
@@ -602,7 +619,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         &mut self,
         action: Action<H::Listener, H::Transport>,
         time: Timestamp,
-    ) -> Result<(), Error<H::Listener, H::Transport>> {
+    ) -> Result<bool, Error<H::Listener, H::Transport>> {
         match action {
             Action::RegisterListener(listener) => {
                 let fd = listener.as_raw_fd();
@@ -626,7 +643,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             }
             Action::UnregisterListener(id) => {
                 let Some(listener) = self.unregister_listener(id) else {
-                    return Ok(());
+                    return Ok(true);
                 };
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Handling over listener {id}");
@@ -634,7 +651,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
             }
             Action::UnregisterTransport(id) => {
                 let Some(transport) = self.unregister_transport(id) else {
-                    return Ok(());
+                    return Ok(true);
                 };
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Handling over transport {id}");
@@ -648,7 +665,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                     #[cfg(feature = "log")]
                     log::error!(target: "reactor", "Transport {id} is not in the reactor");
 
-                    return Ok(());
+                    return Ok(true);
                 };
                 match transport.write_atomic(&data) {
                     Err(WriteError::NotReady) => {
@@ -676,8 +693,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
                 self.timeouts.set_timeout(duration, time);
             }
+            Action::Terminate => return Ok(false),
         }
-        Ok(())
+        Ok(true)
     }
 
     fn handle_shutdown(self) {
