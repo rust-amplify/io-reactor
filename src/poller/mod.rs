@@ -44,46 +44,57 @@ pub struct IoType {
 }
 
 impl IoType {
+    #[inline]
     /// Indicates no I/O operations are tracked.
-    pub fn none() -> Self {
+    pub const fn none() -> Self {
         Self {
             read: false,
             write: false,
         }
     }
 
+    #[inline]
     /// Indicates interest in only read I/O events.
-    pub fn read_only() -> Self {
+    pub const fn read_only() -> Self {
         Self {
             read: true,
             write: false,
         }
     }
 
+    #[inline]
     /// Indicates interest in only write I/O events.
-    pub fn write_only() -> Self {
+    pub const fn write_only() -> Self {
         Self {
             read: false,
             write: true,
         }
     }
 
+    #[inline]
     /// Indicates interest in both read and write I/O events.
-    pub fn read_write() -> Self {
+    pub const fn read_write() -> Self {
         Self {
             read: true,
             write: true,
         }
     }
 
+    #[inline]
     /// Indicates no I/O operations has happened on a resource.
-    pub fn is_none(self) -> bool { !self.read && !self.write }
+    pub const fn is_none(self) -> bool { !self.read && !self.write }
+
+    #[inline]
     /// Indicates data available to be read from a resource.
-    pub fn is_read_only(self) -> bool { self.read && !self.write }
+    pub const fn is_read_only(self) -> bool { self.read && !self.write }
+
+    #[inline]
     /// Indicates that the resource is ready to accept data.
-    pub fn is_write_only(self) -> bool { !self.read && self.write }
+    pub const fn is_write_only(self) -> bool { !self.read && self.write }
+
+    #[inline]
     /// Indicates that the resource can accept data - and has aa data which can be read.
-    pub fn is_read_write(self) -> bool { self.read && self.write }
+    pub const fn is_read_write(self) -> bool { self.read && self.write }
 }
 
 impl ops::Not for IoType {
