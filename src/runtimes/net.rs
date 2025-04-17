@@ -25,21 +25,25 @@
 
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
-use std::io;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, RawFd};
 use std::time::Duration;
 
-use crossbeam_channel as chan;
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, TryRecvError};
 
 use crate::poller::{IoType, Poll, Waker, WakerRecv, WakerSend};
 use crate::resource::WriteError;
 use crate::runtimes::controller::Ctl;
-use crate::runtimes::{Controller, ReactorHandler, ReactorRuntime};
-use crate::{Resource, ResourceId, ResourceType, Timer, Timestamp, WriteAtomic};
+use crate::runtimes::{Controller, Error as RuntimeError, ReactorHandler, ReactorRuntime};
+use crate::{Resource, ResourceId, Timer, Timestamp, WriteAtomic};
 
-/// Maximum amount of time to wait for I/O.
-const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// Type of the resource.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub enum ResourceType {
+    /// Listener resource.
+    Listener,
+    /// Transport resource.
+    Transport,
+}
 
 /// Reactor errors
 #[derive(Error, Display, From)]
@@ -50,9 +54,6 @@ pub enum Error<L: Resource, T: Resource> {
 
     /// transport {0} got disconnected during poll operation.
     TransportDisconnect(ResourceId, T),
-
-    /// polling multiple resources has failed. Details: {0:?}
-    Poll(io::Error),
 }
 
 impl<L: Resource, T: Resource> Debug for Error<L, T> {
@@ -113,7 +114,10 @@ pub enum Action<L: Resource, T: Resource> {
 
 /// A service which handles I/O events generated in the [`Reactor`].
 pub trait Handler:
-    ReactorHandler + Iterator<Item = Action<Self::Listener, Self::Transport>>
+    ReactorHandler<
+    Action = Action<Self::Listener, Self::Transport>,
+    Error = Error<Self::Listener, Self::Transport>,
+>
 {
     /// Type for a listener resource.
     ///
@@ -127,14 +131,6 @@ pub trait Handler:
     /// Transport is a "full" resource which can be read from - and written to. Usual files, network
     /// connections, database connections etc are all fall into this category.
     type Transport: Resource;
-
-    /// Method called by the reactor on the start of each event loop once the poll has returned.
-    fn tick(&mut self, time: Timestamp);
-
-    /// Method called by the reactor when a previously set timeout is fired.
-    ///
-    /// Related: [`Action::SetTimer`].
-    fn handle_timer(&mut self);
 
     /// Method called by the reactor upon an I/O event on a listener resource.
     ///
@@ -164,18 +160,6 @@ pub trait Handler:
     /// [`Self::handle_transport_event`], [`Self::handover_listener`] and [`handover_transport`]
     /// calls to the handler.
     fn handle_registered(&mut self, fd: RawFd, id: ResourceId, ty: ResourceType);
-
-    /// Method called by the reactor when a [`Self::Command`] is received for the [`Handler`].
-    ///
-    /// The commands are sent via [`Controller`] from outside of the reactor, including other
-    /// threads.
-    fn handle_command(&mut self, cmd: Self::Command);
-
-    /// Method called by the reactor on any kind of error during the event loop, including errors of
-    /// the poll syscall or I/O errors returned as a part of the poll result events.
-    ///
-    /// See [`enum@Error`] for the details on errors which may happen.
-    fn handle_error(&mut self, err: Error<Self::Listener, Self::Transport>);
 
     /// Method called by the reactor upon receiving [`Action::UnregisterListener`].
     ///
@@ -211,6 +195,82 @@ pub struct Runtime<H: Handler, P: Poll> {
 }
 
 impl<H: Handler, P: Poll> Runtime<H, P> {
+    fn unregister_listener(&mut self, id: ResourceId) -> Option<H::Listener> {
+        let Some(listener) = self.listeners.remove(&id) else {
+            #[cfg(feature = "log")]
+            log::warn!(target: "reactor", "Unregistering non-registered listener {id}");
+            return None;
+        };
+
+        #[cfg(feature = "log")]
+        log::debug!(target: "reactor", "Handling over listener {id} (fd={})", listener.as_raw_fd());
+
+        self.poller.unregister(id);
+
+        Some(listener)
+    }
+
+    fn unregister_transport(&mut self, id: ResourceId) -> Option<H::Transport> {
+        let Some(transport) = self.transports.remove(&id) else {
+            #[cfg(feature = "log")]
+            log::warn!(target: "reactor", "Unregistering non-registered transport {id}");
+            return None;
+        };
+
+        #[cfg(feature = "log")]
+        log::debug!(target: "reactor", "Unregistering over transport {id} (fd={})", transport.as_raw_fd());
+
+        self.poller.unregister(id);
+
+        Some(transport)
+    }
+}
+
+impl<H: Handler + 'static, P: Poll> ReactorRuntime<P> for Runtime<H, P> {
+    const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+    type Handler = H;
+
+    fn with(
+        service: Self::Handler,
+        poller: P,
+        controller: Controller<
+            <Self::Handler as ReactorHandler>::Command,
+            <P::Waker as Waker>::Send,
+        >,
+        ctl_recv: Receiver<Ctl<<Self::Handler as ReactorHandler>::Command>>,
+        waker_recv: <P::Waker as Waker>::Recv,
+    ) -> Self {
+        Runtime {
+            service,
+            poller,
+            controller,
+            ctl_recv,
+            listeners: empty!(),
+            transports: empty!(),
+            waker: waker_recv,
+            timeouts: Timer::new(),
+        }
+    }
+
+    fn timeouts(&mut self) -> &mut Timer { &mut self.timeouts }
+    fn poller(&mut self) -> &mut P { &mut self.poller }
+    fn service(&mut self) -> &mut Self::Handler { &mut self.service }
+    fn resource_interests(&self) -> impl Iterator<Item = (ResourceId, IoType)> {
+        self.listeners
+            .iter()
+            .map(move |(id, handler)| (*id, handler.interests()))
+            .chain(self.transports.iter().map(move |(id, transport)| (*id, transport.interests())))
+    }
+
+    fn ctl_recv(&self) -> Result<Ctl<<Self::Handler as ReactorHandler>::Command>, TryRecvError> {
+        self.ctl_recv.try_recv()
+    }
+
+    fn controller(&self) -> Controller<<Self::Handler as ReactorHandler>::Command, impl WakerSend> {
+        self.controller.clone()
+    }
+
     /// # Returns
     ///
     /// Whether it was awakened by a waker
@@ -249,7 +309,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         log::trace!(target: "reactor", "Listener {id} {err}");
                         let listener =
                             self.unregister_listener(id).expect("listener has disappeared");
-                        self.service.handle_error(Error::ListenerDisconnect(id, listener));
+                        self.service.handle_error(RuntimeError::Handler(
+                            Error::ListenerDisconnect(id, listener),
+                        ));
                     }
                 }
             } else if self.transports.contains_key(&id) {
@@ -271,7 +333,9 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         log::trace!(target: "reactor", "Transport {id} {err}");
                         let transport =
                             self.unregister_transport(id).expect("transport has disappeared");
-                        self.service.handle_error(Error::TransportDisconnect(id, transport));
+                        self.service.handle_error(RuntimeError::Handler(
+                            Error::TransportDisconnect(id, transport),
+                        ));
                     }
                 }
             } else {
@@ -282,32 +346,6 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         }
 
         awoken
-    }
-
-    /// Handles the actions from the queue.
-    ///
-    /// # Return
-    ///
-    /// Return value indicates whether the reactor must proceed operating (`true`) or should
-    /// terminate (`false`).
-    fn handle_actions(&mut self, time: Timestamp) -> bool {
-        let mut result = true;
-        while let Some(action) = self.service.next() {
-            #[cfg(feature = "log")]
-            log::trace!(target: "reactor", "Handling action {action} from the service");
-
-            // NB: Deadlock may happen here if the service will generate events over and over
-            // in the handle_* calls we may never get out of this loop
-            match self.handle_action(action, time) {
-                Ok(ret) => result |= ret,
-                Err(err) => {
-                    #[cfg(feature = "log")]
-                    log::error!(target: "reactor", "Error: {err}");
-                    self.service.handle_error(err);
-                }
-            }
-        }
-        return result;
     }
 
     /// # Safety
@@ -404,135 +442,11 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
         // We just drop here?
     }
-
-    fn unregister_listener(&mut self, id: ResourceId) -> Option<H::Listener> {
-        let Some(listener) = self.listeners.remove(&id) else {
-            #[cfg(feature = "log")]
-            log::warn!(target: "reactor", "Unregistering non-registered listener {id}");
-            return None;
-        };
-
-        #[cfg(feature = "log")]
-        log::debug!(target: "reactor", "Handling over listener {id} (fd={})", listener.as_raw_fd());
-
-        self.poller.unregister(id);
-
-        Some(listener)
-    }
-
-    fn unregister_transport(&mut self, id: ResourceId) -> Option<H::Transport> {
-        let Some(transport) = self.transports.remove(&id) else {
-            #[cfg(feature = "log")]
-            log::warn!(target: "reactor", "Unregistering non-registered transport {id}");
-            return None;
-        };
-
-        #[cfg(feature = "log")]
-        log::debug!(target: "reactor", "Unregistering over transport {id} (fd={})", transport.as_raw_fd());
-
-        self.poller.unregister(id);
-
-        Some(transport)
-    }
-}
-
-impl<H: Handler + 'static, P: Poll> ReactorRuntime<P> for Runtime<H, P> {
-    type Handler = H;
-
-    fn with(
-        service: Self::Handler,
-        poller: P,
-        controller: Controller<
-            <Self::Handler as ReactorHandler>::Command,
-            <P::Waker as Waker>::Send,
-        >,
-        ctl_recv: Receiver<Ctl<<Self::Handler as ReactorHandler>::Command>>,
-        waker_recv: <P::Waker as Waker>::Recv,
-    ) -> Self {
-        Runtime {
-            service,
-            poller,
-            controller,
-            ctl_recv,
-            listeners: empty!(),
-            transports: empty!(),
-            waker: waker_recv,
-            timeouts: Timer::new(),
-        }
-    }
-
-    fn run(mut self) {
-        loop {
-            let before_poll = Timestamp::now();
-            let timeout = self.timeouts.next_expiring_from(before_poll).unwrap_or(WAIT_TIMEOUT);
-
-            for (id, res) in &self.listeners {
-                self.poller.set_interest(*id, res.interests());
-            }
-            for (id, res) in &self.transports {
-                self.poller.set_interest(*id, res.interests());
-            }
-
-            // Blocking
-            #[cfg(feature = "log")]
-            log::trace!(target: "reactor", "Polling with timeout {timeout:?}");
-
-            let res = self.poller.poll(Some(timeout));
-            let now = Timestamp::now();
-            self.service.tick(now);
-
-            // Nb. The way this is currently used basically ignores which keys have
-            // timed out. So as long as *something* timed out, we wake the service.
-            let timers_fired = self.timeouts.remove_expired_by(now);
-            if timers_fired > 0 {
-                #[cfg(feature = "log")]
-                log::trace!(target: "reactor", "Timer has fired");
-                self.service.handle_timer();
-            }
-
-            match res {
-                Ok(0) if timers_fired == 0 => {
-                    #[cfg(feature = "log")]
-                    log::trace!(target: "reactor", "Poll timeout; no I/O events had happened");
-                }
-                Err(err) => {
-                    #[cfg(feature = "log")]
-                    log::error!(target: "reactor", "Error during polling: {err}");
-                    self.service.handle_error(Error::Poll(err));
-                }
-                _ => {}
-            }
-
-            let awoken = self.handle_events(now);
-
-            // Process the commands only if we awaken by the waker
-            if awoken {
-                loop {
-                    match self.ctl_recv.try_recv() {
-                        Err(chan::TryRecvError::Empty) => break,
-                        Err(chan::TryRecvError::Disconnected) => {
-                            panic!("control channel is broken")
-                        }
-                        Ok(Ctl::Shutdown) => return self.handle_shutdown(),
-                        Ok(Ctl::Cmd(cmd)) => self.service.handle_command(cmd),
-                    }
-                }
-            }
-
-            if !self.handle_actions(now) {
-                break;
-            };
-        }
-    }
-
-    fn controller(&self) -> Controller<<Self::Handler as ReactorHandler>::Command, impl WakerSend> {
-        self.controller.clone()
-    }
 }
 
 #[cfg(test)]
 mod test {
-    use std::io::stdout;
+    use std::io::{self, stdout};
     use std::thread::sleep;
 
     use super::*;
@@ -593,16 +507,31 @@ mod test {
         }
         impl ReactorHandler for DumbService {
             type Command = Cmd;
-        }
-        impl Handler for DumbService {
-            type Listener = DumbRes;
-            type Transport = DumbRes;
+            type Action = Action<DumbRes, DumbRes>;
+            type Error = Error<DumbRes, DumbRes>;
 
             fn tick(&mut self, _time: Timestamp) {}
             fn handle_timer(&mut self) {
                 self.log.push(Event::Timer);
                 self.set_timer = true;
             }
+            fn handle_command(&mut self, cmd: Self::Command) {
+                match cmd {
+                    Cmd::Init => {
+                        self.add_resource = true;
+                        self.set_timer = true;
+                    }
+                    Cmd::Expect(expected) => {
+                        assert_eq!(expected, self.log);
+                    }
+                }
+            }
+            fn handle_error(&mut self, err: RuntimeError<Self::Error>) { panic!("{err}") }
+        }
+        impl Handler for DumbService {
+            type Listener = DumbRes;
+            type Transport = DumbRes;
+
             fn handle_listener_event(
                 &mut self,
                 _fd: RawFd,
@@ -622,20 +551,6 @@ mod test {
                 unreachable!()
             }
             fn handle_registered(&mut self, _fd: RawFd, _id: ResourceId, _ty: ResourceType) {}
-            fn handle_command(&mut self, cmd: Self::Command) {
-                match cmd {
-                    Cmd::Init => {
-                        self.add_resource = true;
-                        self.set_timer = true;
-                    }
-                    Cmd::Expect(expected) => {
-                        assert_eq!(expected, self.log);
-                    }
-                }
-            }
-            fn handle_error(&mut self, err: Error<Self::Listener, Self::Transport>) {
-                panic!("{err}")
-            }
             fn handover_listener(&mut self, _id: ResourceId, _listener: Self::Listener) {
                 unreachable!()
             }

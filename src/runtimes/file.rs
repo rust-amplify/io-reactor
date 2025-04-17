@@ -25,22 +25,17 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::time::Duration;
 
-use crossbeam_channel as chan;
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, TryRecvError};
 
-use super::{Controller, ReactorHandler, ReactorRuntime};
+use super::{Controller, Error as ReactorError, ReactorHandler, ReactorRuntime};
 use crate::poller::{IoType, Poll, Waker, WakerRecv, WakerSend};
 use crate::resource::WriteError;
 use crate::resources::{FileEvent, FileResource};
 use crate::runtimes::controller::Ctl;
-use crate::{Resource, ResourceId, ResourceType, Timer, Timestamp, WriteAtomic};
-
-/// Maximum amount of time to wait for I/O.
-const WAIT_TIMEOUT: Duration = Duration::from_secs(1);
+use crate::{Resource, ResourceId, Timer, Timestamp, WriteAtomic};
 
 /// Reactor errors
 #[derive(Debug, Error, Display, From)]
@@ -48,9 +43,6 @@ const WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 pub enum Error {
     /// file {0} got closed during poll operation.
     Closed(ResourceId, FileResource),
-
-    /// polling multiple resources has failed. Details: {0:?}
-    Poll(io::Error),
 }
 
 /// Actions which can be provided to the reactor by the [`Handler`].
@@ -90,35 +82,16 @@ pub enum Action {
 }
 
 /// A service which handles I/O events generated in the [`Reactor`].
-pub trait Handler: ReactorHandler + Iterator<Item = Action> {
-    /// Method called by the reactor on the start of each event loop once the poll has returned.
-    fn tick(&mut self, time: Timestamp);
-
-    /// Method called by the reactor when a previously set timeout is fired.
-    ///
-    /// Related: [`Action::SetTimer`].
-    fn handle_timer(&mut self);
-
-    /// Method called by the reactor upon I/O event on a file resource.
-    fn handle_event(&mut self, fd: RawFd, id: ResourceId, event: FileEvent, time: Timestamp);
-
+pub trait Handler: ReactorHandler<Action = Action, Error = Error> {
     /// Method called by the reactor when a given file was successfully registered and provided
     /// with a resource id.
     ///
     /// The resource id will be used later in [`Self::handle_event`] and [`handover_file`]
     /// calls to the handler.
-    fn handle_registered(&mut self, fd: RawFd, id: ResourceId, ty: ResourceType);
+    fn handle_registered(&mut self, fd: RawFd, id: ResourceId);
 
-    /// Method called by the reactor when a [`Self::Command`] is received for the [`Handler`].
-    ///
-    /// The commands are sent via [`Controller`] from outside the reactor, including other threads.
-    fn handle_command(&mut self, cmd: Self::Command);
-
-    /// Method called by the reactor on any kind of error during the event loop, including errors of
-    /// the poll syscall or I/O errors returned as a part of the poll result events.
-    ///
-    /// See [`enum@Error`] for the details on errors which may happen.
-    fn handle_error(&mut self, err: Error);
+    /// Method called by the reactor upon I/O event on a file resource.
+    fn handle_event(&mut self, fd: RawFd, id: ResourceId, event: FileEvent, time: Timestamp);
 
     /// Method called by the reactor upon receiving [`Action::UnregisterFile`].
     ///
@@ -139,13 +112,70 @@ pub struct Runtime<H: Handler, P: Poll> {
     service: H,
     poller: P,
     controller: Controller<H::Command, <P::Waker as Waker>::Send>,
-    ctl_recv: chan::Receiver<Ctl<H::Command>>,
+    ctl_recv: Receiver<Ctl<H::Command>>,
     files: HashMap<ResourceId, FileResource>,
     waker: <P::Waker as Waker>::Recv,
     timeouts: Timer,
 }
 
 impl<H: Handler, P: Poll> Runtime<H, P> {
+    fn unregister_file(&mut self, id: ResourceId) -> Option<FileResource> {
+        let Some(file) = self.files.remove(&id) else {
+            #[cfg(feature = "log")]
+            log::warn!(target: "reactor", "Unregistering non-registered file {id}");
+            return None;
+        };
+
+        #[cfg(feature = "log")]
+        log::debug!(target: "reactor", "Unregistering over file {id} (fd={})", file.as_raw_fd());
+
+        self.poller.unregister(id);
+
+        Some(file)
+    }
+}
+
+impl<H: Handler + 'static, P: Poll> ReactorRuntime<P> for Runtime<H, P> {
+    const WAIT_TIMEOUT: Duration = Duration::from_secs(1);
+
+    type Handler = H;
+
+    fn with(
+        service: Self::Handler,
+        poller: P,
+        controller: Controller<
+            <Self::Handler as ReactorHandler>::Command,
+            <P::Waker as Waker>::Send,
+        >,
+        ctl_recv: Receiver<Ctl<<Self::Handler as ReactorHandler>::Command>>,
+        waker_recv: <P::Waker as Waker>::Recv,
+    ) -> Self {
+        Runtime {
+            service,
+            poller,
+            controller,
+            ctl_recv,
+            files: empty!(),
+            waker: waker_recv,
+            timeouts: Timer::new(),
+        }
+    }
+
+    fn timeouts(&mut self) -> &mut Timer { &mut self.timeouts }
+    fn poller(&mut self) -> &mut P { &mut self.poller }
+    fn service(&mut self) -> &mut Self::Handler { &mut self.service }
+    fn resource_interests(&self) -> impl Iterator<Item = (ResourceId, IoType)> {
+        self.files.iter().map(move |(id, handler)| (*id, handler.interests()))
+    }
+
+    fn ctl_recv(&self) -> Result<Ctl<<Self::Handler as ReactorHandler>::Command>, TryRecvError> {
+        self.ctl_recv.try_recv()
+    }
+
+    fn controller(&self) -> Controller<<Self::Handler as ReactorHandler>::Command, impl WakerSend> {
+        self.controller.clone()
+    }
+
     /// # Returns
     ///
     /// Whether it was awakened by a waker
@@ -184,7 +214,8 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                         log::trace!(target: "reactor", "Transport {id} {err}");
                         let transport =
                             self.unregister_file(id).expect("transport has disappeared");
-                        self.service.handle_error(Error::Closed(id, transport));
+                        self.service
+                            .handle_error(ReactorError::Handler(Error::Closed(id, transport)));
                     }
                 }
             } else {
@@ -195,32 +226,6 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         }
 
         awoken
-    }
-
-    /// Handles the actions from the queue.
-    ///
-    /// # Return
-    ///
-    /// Return value indicates whether the reactor must proceed operating (`true`) or should
-    /// terminate (`false`).
-    fn handle_actions(&mut self, time: Timestamp) -> bool {
-        let mut result = true;
-        while let Some(action) = self.service.next() {
-            #[cfg(feature = "log")]
-            log::trace!(target: "reactor", "Handling action {action} from the service");
-
-            // NB: Deadlock may happen here if the service will generate events over and over
-            // in the handle_* calls we may never get out of this loop
-            match self.handle_action(action, time) {
-                Ok(ret) => result |= ret,
-                Err(err) => {
-                    #[cfg(feature = "log")]
-                    log::error!(target: "reactor", "Error: {err}");
-                    self.service.handle_error(err);
-                }
-            }
-        }
-        result
     }
 
     /// # Safety
@@ -238,7 +243,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
 
                 let id = self.poller.register(&file, IoType::read_only());
                 self.files.insert(id, file);
-                self.service.handle_registered(fd, id, ResourceType::Transport);
+                self.service.handle_registered(fd, id);
             }
             Action::UnregisterFile(id) => {
                 let Some(transport) = self.unregister_file(id) else {
@@ -294,110 +299,5 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
         log::info!(target: "reactor", "Shutdown");
 
         // We just drop here?
-    }
-
-    fn unregister_file(&mut self, id: ResourceId) -> Option<FileResource> {
-        let Some(file) = self.files.remove(&id) else {
-            #[cfg(feature = "log")]
-            log::warn!(target: "reactor", "Unregistering non-registered file {id}");
-            return None;
-        };
-
-        #[cfg(feature = "log")]
-        log::debug!(target: "reactor", "Unregistering over file {id} (fd={})", file.as_raw_fd());
-
-        self.poller.unregister(id);
-
-        Some(file)
-    }
-}
-
-impl<H: Handler + 'static, P: Poll> ReactorRuntime<P> for Runtime<H, P> {
-    type Handler = H;
-
-    fn with(
-        service: Self::Handler,
-        poller: P,
-        controller: Controller<
-            <Self::Handler as ReactorHandler>::Command,
-            <P::Waker as Waker>::Send,
-        >,
-        ctl_recv: Receiver<Ctl<<Self::Handler as ReactorHandler>::Command>>,
-        waker_recv: <P::Waker as Waker>::Recv,
-    ) -> Self {
-        Runtime {
-            service,
-            poller,
-            controller,
-            ctl_recv,
-            files: empty!(),
-            waker: waker_recv,
-            timeouts: Timer::new(),
-        }
-    }
-
-    fn run(mut self) {
-        loop {
-            let before_poll = Timestamp::now();
-            let timeout = self.timeouts.next_expiring_from(before_poll).unwrap_or(WAIT_TIMEOUT);
-
-            for (id, res) in &self.files {
-                self.poller.set_interest(*id, res.interests());
-            }
-
-            // Blocking
-            #[cfg(feature = "log")]
-            log::trace!(target: "reactor", "Polling with timeout {timeout:?}");
-
-            let res = self.poller.poll(Some(timeout));
-            let now = Timestamp::now();
-            self.service.tick(now);
-
-            // Nb. The way this is currently used basically ignores which keys have
-            // timed out. So as long as *something* timed out, we wake the service.
-            let timers_fired = self.timeouts.remove_expired_by(now);
-            if timers_fired > 0 {
-                #[cfg(feature = "log")]
-                log::trace!(target: "reactor", "Timer has fired");
-                self.service.handle_timer();
-            }
-
-            match res {
-                Ok(0) if timers_fired == 0 => {
-                    #[cfg(feature = "log")]
-                    log::trace!(target: "reactor", "Poll timeout; no I/O events had happened");
-                }
-                Err(err) => {
-                    #[cfg(feature = "log")]
-                    log::error!(target: "reactor", "Error during polling: {err}");
-                    self.service.handle_error(Error::Poll(err));
-                }
-                _ => {}
-            }
-
-            let awoken = self.handle_events(now);
-
-            // Process the commands only if we awaken by the waker
-            if awoken {
-                loop {
-                    match self.ctl_recv.try_recv() {
-                        Err(chan::TryRecvError::Empty) => break,
-                        Err(chan::TryRecvError::Disconnected) => {
-                            panic!("control channel is broken")
-                        }
-                        Ok(Ctl::Shutdown) => return self.handle_shutdown(),
-                        Ok(Ctl::Cmd(cmd)) => self.service.handle_command(cmd),
-                    }
-                }
-            }
-
-            if !self.handle_actions(now) {
-                break;
-            };
-        }
-    }
-
-    fn controller(&self) -> Controller<<Self::Handler as ReactorHandler>::Command, impl WakerSend> {
-        self.controller.clone()
     }
 }

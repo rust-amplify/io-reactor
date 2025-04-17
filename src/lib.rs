@@ -78,7 +78,6 @@ mod reactor;
 
 pub use reactor::Reactor;
 pub use resource::{
-    ImpossibleListener, Io, Resource, ResourceId, ResourceIdGenerator, ResourceType, WriteAtomic,
-    WriteError,
+    ImpossibleListener, Io, Resource, ResourceId, ResourceIdGenerator, WriteAtomic, WriteError,
 };
 pub use timeouts::{Timer, Timestamp};
