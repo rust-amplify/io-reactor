@@ -21,6 +21,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::convert::Infallible;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::io::{self, ErrorKind};
@@ -164,4 +165,41 @@ pub trait WriteAtomic: io::Write {
     /// cases. Ig these errors are returned from this methods [`WriteAtomic::write_atomic`] will
     /// panic.
     fn write_or_buf(&mut self, buf: &[u8]) -> io::Result<()>;
+}
+
+/// Listener which can't be instantiated. Used for reactors which do not have the concept of a
+/// listener (for instance file-based).
+pub enum ImpossibleListener {}
+
+impl AsRawFd for ImpossibleListener {
+    fn as_raw_fd(&self) -> i32 { unreachable!("ImpossibleListener is not a valid resource") }
+}
+
+impl io::Write for ImpossibleListener {
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        unreachable!("ImpossibleListener is not a valid resource")
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        unreachable!("ImpossibleListener is not a valid resource")
+    }
+}
+
+impl WriteAtomic for ImpossibleListener {
+    fn is_ready_to_write(&self) -> bool {
+        unreachable!("ImpossibleListener is not a valid resource")
+    }
+    fn empty_write_buf(&mut self) -> io::Result<bool> {
+        unreachable!("ImpossibleListener is not a valid resource")
+    }
+    fn write_or_buf(&mut self, _: &[u8]) -> io::Result<()> {
+        unreachable!("ImpossibleListener is not a valid resource")
+    }
+}
+
+impl Resource for ImpossibleListener {
+    type Event = Infallible;
+    fn interests(&self) -> IoType { unreachable!("ImpossibleListener is not a valid resource") }
+    fn handle_io(&mut self, _: Io) -> Option<Self::Event> {
+        unreachable!("ImpossibleListener is not a valid resource")
+    }
 }

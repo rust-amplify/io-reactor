@@ -77,7 +77,8 @@ mod resource;
 mod timeouts;
 
 pub use resource::{
-    Io, Resource, ResourceId, ResourceIdGenerator, ResourceType, WriteAtomic, WriteError,
+    ImpossibleListener, Io, Resource, ResourceId, ResourceIdGenerator, ResourceType, WriteAtomic,
+    WriteError,
 };
 pub use timeouts::{Timer, Timestamp};
 
