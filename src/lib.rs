@@ -70,14 +70,15 @@
 extern crate amplify;
 
 pub mod poller;
-mod reactor;
 mod resource;
 mod timeouts;
+pub mod resources;
+pub mod runtimes;
+mod reactor;
 
+pub use reactor::Reactor;
 pub use resource::{
     ImpossibleListener, Io, Resource, ResourceId, ResourceIdGenerator, ResourceType, WriteAtomic,
     WriteError,
 };
 pub use timeouts::{Timer, Timestamp};
-
-pub use self::reactor::{Action, Controller, Error, Handler, Reactor, Runtime};

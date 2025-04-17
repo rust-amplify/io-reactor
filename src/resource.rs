@@ -98,7 +98,7 @@ pub enum WriteError {
     /// a connection has not yet established in full or handshake is not
     /// complete. A specific case in which this error is returned is defined
     /// by an underlying resource type; however, this error happens only
-    /// due to a business logic bugs in a [`crate::reactor::Handler`]
+    /// due to a business logic bugs in a [`crate::controller::Handler`]
     /// implementation.
     #[display("resource not ready to accept the data")]
     NotReady,
