@@ -62,8 +62,8 @@ jobs:
           - ubuntu-latest
           - macos-12
           - macos-latest
-          # - windows-2019
-          # - windows-2022
+          - windows-2025
+          - windows-latest
     steps:
       - uses: actions/checkout@v2
       - name: Install rust stable
