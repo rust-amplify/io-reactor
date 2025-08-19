@@ -25,13 +25,13 @@
 
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
-use std::os::unix::io::{AsRawFd, RawFd};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{io, thread};
 
 use crossbeam_channel as chan;
 
+use crate::os::{AsRaw, Raw};
 use crate::poller::{IoType, Poll, Waker, WakerRecv, WakerSend};
 use crate::resource::WriteError;
 use crate::{Resource, ResourceId, ResourceType, Timer, Timestamp, WriteAtomic};
@@ -164,7 +164,7 @@ pub trait Handler: Send + Iterator<Item = Action<Self::Listener, Self::Transport
     /// The resource id will be used later in [`Self::handle_listener_event`],
     /// [`Self::handle_transport_event`], [`Self::handover_listener`] and [`handover_transport`]
     /// calls to the handler.
-    fn handle_registered(&mut self, fd: RawFd, id: ResourceId, ty: ResourceType);
+    fn handle_registered(&mut self, fd: Raw, id: ResourceId, ty: ResourceType);
 
     /// Method called by the reactor when a [`Self::Command`] is received for the [`Handler`].
     ///
@@ -601,7 +601,11 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     ) -> Result<(), Error<H::Listener, H::Transport>> {
         match action {
             Action::RegisterListener(listener) => {
+                #[cfg(unix)]
                 let fd = listener.as_raw_fd();
+
+                #[cfg(windows)]
+                let fd = listener.as_raw_socket();
 
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Registering listener with fd={fd}");
@@ -611,7 +615,11 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
                 self.service.handle_registered(fd, id, ResourceType::Listener);
             }
             Action::RegisterTransport(transport) => {
+                #[cfg(unix)]
                 let fd = transport.as_raw_fd();
+
+                #[cfg(windows)]
+                let fd = transport.as_raw_socket();
 
                 #[cfg(feature = "log")]
                 log::debug!(target: "reactor", "Registering transport with fd={fd}");
@@ -714,7 +722,7 @@ impl<H: Handler, P: Poll> Runtime<H, P> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod test {
     use std::io::stdout;
     use std::thread::sleep;
@@ -722,12 +730,12 @@ mod test {
     use super::*;
     use crate::{poller, Io};
 
-    pub struct DumbRes(Box<dyn AsRawFd + Send>);
+    pub struct DumbRes(Box<dyn AsRaw + Send>);
     impl DumbRes {
         pub fn new() -> DumbRes { DumbRes(Box::new(stdout())) }
     }
-    impl AsRawFd for DumbRes {
-        fn as_raw_fd(&self) -> RawFd { self.0.as_raw_fd() }
+    impl AsRaw for DumbRes {
+        fn as_raw_fd(&self) -> Raw { self.0.as_raw_fd() }
     }
     impl io::Write for DumbRes {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> { Ok(buf.len()) }
@@ -801,7 +809,7 @@ mod test {
             ) {
                 unreachable!()
             }
-            fn handle_registered(&mut self, _fd: RawFd, _id: ResourceId, _ty: ResourceType) {}
+            fn handle_registered(&mut self, _fd: Raw, _id: ResourceId, _ty: ResourceType) {}
             fn handle_command(&mut self, cmd: Self::Command) {
                 match cmd {
                     Cmd::Init => {

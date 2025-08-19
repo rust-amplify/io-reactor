@@ -24,8 +24,8 @@
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::io::{self, ErrorKind};
-use std::os::unix::io::AsRawFd;
 
+use crate::os::AsRaw;
 use crate::poller::IoType;
 
 /// I/O events which can be subscribed for - or notified about by the [`crate::Reactor`] on a
@@ -79,7 +79,7 @@ impl ResourceId {
 }
 
 /// A resource which can be managed by the reactor.
-pub trait Resource: AsRawFd + WriteAtomic + Send {
+pub trait Resource: AsRaw + WriteAtomic + Send {
     /// Events which resource may generate upon receiving I/O from the reactor via
     /// [`Self::handle_io`]. These events are passed to the reactor [`crate::Handler`].
     type Event;

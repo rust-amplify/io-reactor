@@ -25,10 +25,10 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Error};
-use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::os::{AsRaw, Raw};
 use crate::poller::{IoFail, IoType, Poll, Waker, WakerRecv, WakerSend};
 use crate::{ResourceId, ResourceIdGenerator};
 
@@ -68,7 +68,7 @@ impl Poller {
 impl Poll for Poller {
     type Waker = PopolWaker;
 
-    fn register_waker(&mut self, fd: &impl AsRawFd) {
+    fn register_waker(&mut self, fd: &impl AsRaw) {
         let id = ResourceId::WAKER;
         if self.poll.get(&id).is_some() {
             #[cfg(feature = "log")]
@@ -79,7 +79,7 @@ impl Poll for Poller {
         self.poll.register(id, fd, popol::interest::READ);
     }
 
-    fn register(&mut self, fd: &impl AsRawFd, interest: IoType) -> ResourceId {
+    fn register(&mut self, fd: &impl AsRaw, interest: IoType) -> ResourceId {
         let id = self.id_gen.next();
 
         #[cfg(feature = "log")]
@@ -143,10 +143,16 @@ impl Iterator for Poller {
             #[cfg(feature = "log")]
             log::trace!(target: "popol", "Hangup on {id}");
 
+            #[cfg(windows)]
+            let fired = fired.0;
+
             Err(IoFail::Connectivity(fired))
         } else if event.is_error() || event.is_invalid() {
             #[cfg(feature = "log")]
             log::trace!(target: "popol", "OS error on {id} (fired events {fired:#b})");
+
+            #[cfg(windows)]
+            let fired = fired.0;
 
             Err(IoFail::Os(fired))
         } else {
@@ -200,8 +206,12 @@ impl io::Read for PopolWaker {
     }
 }
 
-impl AsRawFd for PopolWaker {
-    fn as_raw_fd(&self) -> RawFd { self.0.as_ref().as_raw_fd() }
+impl AsRaw for PopolWaker {
+    #[cfg(unix)]
+    fn as_raw_fd(&self) -> Raw { self.0.as_ref().as_raw_fd() }
+
+    #[cfg(windows)]
+    fn as_raw_socket(&self) -> Raw { self.0.as_ref().as_raw_socket() }
 }
 
 impl WakerRecv for PopolWaker {

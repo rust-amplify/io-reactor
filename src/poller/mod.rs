@@ -27,10 +27,10 @@
 pub mod popol;
 
 use std::fmt::{self, Display, Formatter};
-use std::os::unix::io::AsRawFd;
 use std::time::Duration;
 use std::{io, ops};
 
+use crate::os::AsRaw;
 use crate::resource::Io;
 use crate::ResourceId;
 
@@ -155,9 +155,9 @@ where
     type Waker: Waker;
 
     /// Registers a waker object.
-    fn register_waker(&mut self, fd: &impl AsRawFd);
+    fn register_waker(&mut self, fd: &impl AsRaw);
     /// Registers a file-descriptor based resource for a poll.
-    fn register(&mut self, fd: &impl AsRawFd, interest: IoType) -> ResourceId;
+    fn register(&mut self, fd: &impl AsRaw, interest: IoType) -> ResourceId;
     /// Unregisters a file-descriptor based resource from a poll.
     fn unregister(&mut self, id: ResourceId);
     /// Subscribes for a specific set of events for a given file descriptor-backed resource (see
@@ -190,7 +190,7 @@ pub trait WakerSend: Send + Sync + Clone {
 }
 
 /// Receiver part of the waker.
-pub trait WakerRecv: AsRawFd + Send + io::Read {
+pub trait WakerRecv: AsRaw + Send + io::Read {
     /// Resets the waker reader.
     fn reset(&self);
 }

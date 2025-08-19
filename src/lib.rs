@@ -82,3 +82,12 @@ pub use resource::{
 pub use timeouts::{Timer, Timestamp};
 
 pub use self::reactor::{Action, Controller, Error, Handler, Reactor, Runtime};
+
+
+mod os {
+    #[cfg(unix)]
+    pub(crate) use std::os::unix::io::{AsRawFd as AsRaw, RawFd as Raw};
+
+    #[cfg(windows)]
+    pub(crate) use std::os::windows::io::{AsRawSocket as AsRaw, RawSocket as Raw};
+}
