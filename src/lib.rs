@@ -81,4 +81,4 @@ pub use resource::{
 };
 pub use timeouts::{Timer, Timestamp};
 
-pub use self::reactor::{Action, Controller, Error, Handler, Reactor, Runtime};
+pub use self::reactor::{Action, Controller, Error, Handler, Reactor, Runtime, Sender};
