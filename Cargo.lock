@@ -122,7 +122,6 @@ version = "0.5.2"
 dependencies = [
  "amplify",
  "crossbeam-channel",
- "libc",
  "log",
  "mio",
  "polling",
