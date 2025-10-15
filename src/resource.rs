@@ -2,25 +2,24 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 //
-// Written in 2021-2023 by
+// Written in 2021-2025 by
 //     Dr. Maxim Orlovsky <orlovsky@ubideco.org>
 //     Alexis Sellier <alexis@cloudhead.io>
 //
-// Copyright 2022-2023 UBIDECO Institute, Switzerland
-// Copyright 2021 Alexis Sellier <alexis@cloudhead.io>
+// Copyright 2022-2025 UBIDECO Labs, InDCS, Lugano, Switzerland. All Rights reserved.
+// Copyright 2021-2023 Alexis Sellier <alexis@cloudhead.io>. All Rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License. You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Unless required by applicable law or agreed to in writing, software distributed under the License
+// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+// or implied. See the License for the specific language governing permissions and limitations under
+// the License.
 
+use std::convert::Infallible;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::io::{self, ErrorKind};
@@ -36,15 +35,6 @@ pub enum Io {
     Read,
     /// Output event
     Write,
-}
-
-/// Type of the resource.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub enum ResourceType {
-    /// Listener resource.
-    Listener,
-    /// Transport resource.
-    Transport,
 }
 
 /// Generator for the new [`ResourceId`]s which should be used by pollers implementing [`Poll`]
@@ -99,7 +89,7 @@ pub enum WriteError {
     /// a connection has not yet established in full or handshake is not
     /// complete. A specific case in which this error is returned is defined
     /// by an underlying resource type; however, this error happens only
-    /// due to a business logic bugs in a [`crate::reactor::Handler`]
+    /// due to a business logic bugs in a [`crate::controller::Handler`]
     /// implementation.
     #[display("resource not ready to accept the data")]
     NotReady,
@@ -164,4 +154,41 @@ pub trait WriteAtomic: io::Write {
     /// cases. Ig these errors are returned from this methods [`WriteAtomic::write_atomic`] will
     /// panic.
     fn write_or_buf(&mut self, buf: &[u8]) -> io::Result<()>;
+}
+
+/// Listener which can't be instantiated. Used for reactors which do not have the concept of a
+/// listener (for instance file-based).
+pub enum ImpossibleListener {}
+
+impl AsRawFd for ImpossibleListener {
+    fn as_raw_fd(&self) -> i32 { unreachable!("ImpossibleListener is not a valid resource") }
+}
+
+impl io::Write for ImpossibleListener {
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        unreachable!("ImpossibleListener is not a valid resource")
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        unreachable!("ImpossibleListener is not a valid resource")
+    }
+}
+
+impl WriteAtomic for ImpossibleListener {
+    fn is_ready_to_write(&self) -> bool {
+        unreachable!("ImpossibleListener is not a valid resource")
+    }
+    fn empty_write_buf(&mut self) -> io::Result<bool> {
+        unreachable!("ImpossibleListener is not a valid resource")
+    }
+    fn write_or_buf(&mut self, _: &[u8]) -> io::Result<()> {
+        unreachable!("ImpossibleListener is not a valid resource")
+    }
+}
+
+impl Resource for ImpossibleListener {
+    type Event = Infallible;
+    fn interests(&self) -> IoType { unreachable!("ImpossibleListener is not a valid resource") }
+    fn handle_io(&mut self, _: Io) -> Option<Self::Event> {
+        unreachable!("ImpossibleListener is not a valid resource")
+    }
 }
